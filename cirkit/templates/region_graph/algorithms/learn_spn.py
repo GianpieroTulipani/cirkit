@@ -235,18 +235,16 @@ class SPNCircuit(RootedDiAcyclicGraph):
         root: Node,
     ):
         super().__init__(nodes, in_nodes, outputs=[root])
-        self._root = root
         
     def eval(self, x: Tensor) -> Tensor:
         """
         Evaluate the entire circuit on batch x: [batch_size, num_features].
         Returns: [batch_size] tensor of log‐likelihoods.
         """
-        cache: Dict[Node, Tensor] = {}
         for node in self.topological_ordering():
-            cache[node] = node.eval_batch(x)
+            output = node.eval_batch(x)
 
-        return cache[self._root]
+        return output
 
 
 # === Slice and Learning ===
