@@ -9,8 +9,7 @@ import numpy as np
 import torch
 from torch import Tensor, LongTensor
 
-from cirkit.templates.region_graph.algorithms.chow_liu import _categorical_mutual_info
-from cirkit.utils.algorithms import RootedDiAcyclicGraph, topological_ordering
+from cirkit.utils.algorithms import RootedDiAcyclicGraph
 
 
 # === Utility Functions ===
@@ -79,21 +78,15 @@ def hard_em_categorical(
     N, V = X.shape
     device = X.device
 
-    # Initialize random assignments, ensure nonempty clusters
-    assignments = torch.randint(0, k, (N,), device=device)
+    # Deterministic initial assignments: round-robin
+    assignments = torch.arange(N, device=device) % k
     unique_clusters = torch.unique(assignments)
     if unique_clusters.numel() < k:
         for c in range(k):
             if c not in unique_clusters:
-                idx = torch.randint(0, N, (1,), device=device).item()
+                idx = c % N
                 assignments[idx] = c
         unique_clusters = torch.unique(assignments)
-
-    # Compute cardinalities if not provided
-    if cardinalities is None:
-        cardinalities = torch.tensor(
-            [int(X[:, j].max().item()) + 1 for j in range(V)], device=device
-        )
 
     for _ in range(max_iters):
         prev = assignments.clone()
@@ -243,27 +236,16 @@ class SPNCircuit(RootedDiAcyclicGraph):
     ):
         super().__init__(nodes, in_nodes, outputs=[root])
         self._root = root
-        self._topo_order = list(self.topological_ordering())
-
+        
     def eval(self, x: Tensor) -> Tensor:
         """
         Evaluate the entire circuit on batch x: [batch_size, num_features].
         Returns: [batch_size] tensor of log‐likelihoods.
         """
         cache: Dict[Node, Tensor] = {}
-        for node in self._topo_order:
-            if isinstance(node, (LeafNode, FactorNode)):
-                cache[node] = node.eval_batch(x)
-            elif isinstance(node, SumNode):
-                child_vals = torch.stack([cache[c] for c in node.children], dim=1)  # [B, C]
-                max_vals, _ = child_vals.max(dim=1, keepdim=True)  # [B, 1]
-                centered = child_vals - max_vals  # [B, C]
-                w = node.weights.to(child_vals.device)  # [C]
-                weighted = centered + torch.log(w).unsqueeze(0)  # [B, C]
-                cache[node] = max_vals.squeeze(1) + torch.logsumexp(weighted, dim=1)
-            else:  # ProdNode
-                stacked = torch.stack([cache[c] for c in node.children], dim=1)  # [B, C]
-                cache[node] = stacked.sum(dim=1)
+        for node in self.topological_ordering():
+            cache[node] = node.eval_batch(x)
+
         return cache[self._root]
 
 
@@ -383,8 +365,8 @@ class LearnSPN:
         mask_remaining = torch.ones(n_feats, dtype=torch.bool, device=device)
         mask_dependent = torch.zeros(n_feats, dtype=torch.bool, device=device)
 
-        # Start with a random feature as dependent
-        seed = torch.randint(0, n_feats, (1,), device=device).item()
+        # Deterministic: always start with feature index 0
+        seed = 0
         mask_remaining[seed] = False
         mask_dependent[seed] = True
 
