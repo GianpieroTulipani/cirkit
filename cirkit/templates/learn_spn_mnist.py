@@ -1,7 +1,7 @@
 from torchvision import datasets
 from torch.utils.data import DataLoader, TensorDataset
 from cirkit.templates.learn_spn import LearnSPN
-from cirkit.symbolic.compile import compile
+from cirkit.pipeline import compile
 import torch
 import numpy as np
 
