@@ -9,7 +9,6 @@ import numpy as np
 from torch import LongTensor, Tensor
 from fast_pytorch_kmeans import KMeans
 
-from cirkit.pipeline import compile
 from cirkit.symbolic.circuit import Circuit
 from cirkit.symbolic.layers import HadamardLayer, SumLayer, Layer
 from cirkit.symbolic.parameters import TensorParameter, Parameter
