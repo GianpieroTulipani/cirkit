@@ -283,10 +283,8 @@ class Circuit(DiAcyclicGraph[Layer]):
             visited.add(node)
 
             node_children = self.node_inputs(node)
-            if node in self.literals:
-                # literals are always accepted
-                on_the_path.add(node)
-            elif len(node_children) == 1:
+
+            if len(node_children) == 1:
                 # if this node has only one child, then it is a trivial node
                 # we can remove it and attach its parents as parents of the
                 # unique children
