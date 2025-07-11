@@ -295,6 +295,8 @@ class Circuit(DiAcyclicGraph[Layer]):
                         self._in_nodes[node].remove(node_child)
                         self._in_nodes[node].extend(node_child_descendants)
 
+                        to_visit.extendleft(node_child_descendants)
+
                 to_visit.extendleft([c for c in node_children if c not in visited])
 
         self._nodes = list(on_the_path)
