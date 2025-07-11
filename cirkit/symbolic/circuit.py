@@ -271,7 +271,7 @@ class Circuit(DiAcyclicGraph[Layer]):
         self.scope = Scope.union(*tuple(self._scopes[sl] for sl in self.outputs))
 
     
-    """def compress(self) -> None:
+    def compress(self):
         on_the_path = set()
         visited = set()
         to_visit = deque(self.outputs)
@@ -330,60 +330,6 @@ class Circuit(DiAcyclicGraph[Layer]):
             if n in self._nodes
         }
 
-        super().__init__(self._nodes, self._in_nodes, self._outputs)"""
-    
-    def compress(self):
-        # Use a set for quick membership & removal
-        nodes = set(self._nodes)
-        in_edges = { n: set(inp) for n, inp in self._in_nodes.items() }
-        out_edges = defaultdict(set)
-        for n, inp in in_edges.items():
-            for p in inp:
-                out_edges[p].add(n)
-
-        # BFS from outputs, but don’t rebuild graph metadata each step
-        reachable = set()
-        queue = deque(self.outputs)
-        while queue:
-            node = queue.popleft()
-            if node in reachable:
-                continue
-            reachable.add(node)
-
-            children = in_edges.get(node, ())
-            # trivial‐node collapse
-            if len(children) == 1:
-                child = next(iter(children))
-                parents = out_edges[node]
-
-                if not parents:
-                    # node is a root: rewire outputs
-                    self._outputs = [child]
-                else:
-                    # rewire each parent → child
-                    for parent in parents:
-                        in_edges[parent].remove(node)
-                        in_edges[parent].add(child)
-                        out_edges[child].add(parent)
-                    out_edges.pop(node, None)
-
-                # schedule child for re‑visit
-                queue.appendleft(child)
-                # drop node entirely
-                nodes.remove(node)
-                in_edges.pop(node, None)
-
-            else:
-                # mark on‐path and continue BFS
-                for c in children:
-                    queue.append(c)
-
-        # Now prune any orphaned nodes
-        self._nodes = list(reachable)
-        self._in_nodes = {
-            n: list(in_edges[n] & reachable)
-            for n in reachable
-        }
         super().__init__(self._nodes, self._in_nodes, self._outputs)
 
 
