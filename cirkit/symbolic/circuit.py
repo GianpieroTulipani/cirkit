@@ -270,64 +270,58 @@ class Circuit(DiAcyclicGraph[Layer]):
                 )
         self.scope = Scope.union(*tuple(self._scopes[sl] for sl in self.outputs))
 
-    def compress(self):
-        on_the_path = set()
-        visited = set()
+    
+    def compress(self) -> None:
+        """Remove unreachable or trivial layers, merging where possible."""
+        on_the_path: set[Layer] = set()
+        visited: set[Layer] = set()
         to_visit = deque(self.outputs)
+
         while to_visit:
-            node = to_visit.popleft()
-            visited.add(node)
+            layer = to_visit.popleft()
+            visited.add(layer)
 
-            node_children = self.node_inputs(node)
+            children = list(self.layer_inputs(layer))
 
-            if len(node_children) == 1:
-                node_parents = self.node_outputs(node)
+            if len(children) == 1:
+                child = children[0]
+                parents = list(self.layer_outputs(layer))
 
-                if len(node_parents) == 0:
-                    # we are replacing the root node with its child
-                    self._outputs = [node_children[0]]
-                    self._nodes.remove(node)
+                if not parents:
+                    self._outputs = [child]
+                    self._layers.remove(layer)
                 else:
-                    # the node has parents: connect them to its child
-                    for node_parent in node_parents:
-                        self._in_nodes[node_parent].remove(node)
-                        self._in_nodes[node_parent].append(node_children[0])
+                    for p in parents:
+                        self._in_layers[p].remove(layer)
+                        self._in_layers[p].append(child)
 
-                if node_children[0] not in visited:
-                    to_visit.appendleft(node_children[0])
+                if child not in visited:
+                    to_visit.appendleft(child)
 
-                # remove from nodes
-                self._nodes = [n for n in self._nodes if n != node]
-            elif len(node_children) > 1:
-                on_the_path.add(node)
+                self._layers.remove(layer)
 
-                # inspect children, if there are some that are
-                # of the same type of this node, we can merge them
-                # on this node and visit this node again
-                for node_child in node_children:
-                    if type(node) is type(node_child):
-                        node_child_descendants = [
-                            d for d in self.node_inputs(node_child) if d not in self._in_nodes[node]
-                        ]
+            elif len(children) > 1:
+                on_the_path.add(layer)
+                for ch in children:
+                    if type(ch) is type(layer):
+                        ch_inputs = [gg for gg in self.layer_inputs(ch)
+                                     if gg not in self._in_layers[layer]]
+                        self._in_layers[layer].remove(ch)
+                        self._in_layers[layer].extend(ch_inputs)
+                for ch in self.layer_inputs(layer):
+                    if ch not in visited:
+                        to_visit.appendleft(ch)
 
-                        self._in_nodes[node].remove(node_child)
-                        self._in_nodes[node].extend(node_child_descendants)
+            self._out_layers = graph_nodes_outgoings(self._layers, self.layer_inputs)
 
-                to_visit.extendleft([c for c in node_children if c not in visited])
-
-            # update graph metadata
-            self._out_nodes = graph_nodes_outgoings(self._nodes, self.node_inputs)
-
-        self._nodes = list(on_the_path)
-        # filter out all nodes that have been compressed
-        self._in_nodes = {
-            n: [i for i in n_inputs if i in self._nodes]
-            for n, n_inputs in self._in_nodes.items()
-            if n in self._nodes
+        self._layers = list(on_the_path)
+        self._in_layers = {
+            lay: [inp for inp in ins if inp in on_the_path]
+            for lay, ins in self._in_layers.items()
+            if lay in on_the_path
         }
 
-        # re initialize the graph
-        self.__init__(self._nodes, self._in_nodes, self._outputs)
+        super().__init__(self._layers, self._in_layers, self._outputs)
 
 
     @property
