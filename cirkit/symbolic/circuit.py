@@ -280,29 +280,7 @@ class Circuit(DiAcyclicGraph[Layer]):
             visited.add(node)
 
             node_children = self.node_inputs(node)
-
-            if len(node_children) == 1:
-                # if this node has only one child, then it is a trivial node
-                # we can remove it and attach its parents as parents of the
-                # unique children
-                node_parents = self.node_outputs(node)
-
-                if len(node_parents) == 0:
-                    # we are replacing the root node with its child
-                    self._outputs = [node_children[0]]
-                    self._nodes.remove(node)
-                else:
-                    # the node has parents: connect them to its child
-                    for node_parent in node_parents:
-                        self._in_nodes[node_parent].remove(node)
-                        self._in_nodes[node_parent].append(node_children[0])
-
-                if node_children[0] not in visited:
-                    to_visit.appendleft(node_children[0])
-
-                # remove from nodes
-                self._nodes = [n for n in self._nodes if n != node]
-            elif len(node_children) > 1:
+            if len(node_children) > 1:
                 on_the_path.add(node)
 
                 # inspect children, if there are some that are
@@ -318,9 +296,6 @@ class Circuit(DiAcyclicGraph[Layer]):
                         self._in_nodes[node].extend(node_child_descendants)
 
                 to_visit.extendleft([c for c in node_children if c not in visited])
-
-            # update graph metadata
-            #self._out_nodes = graph_nodes_outgoings(self._nodes, self.node_inputs)
 
         self._nodes = list(on_the_path)
         # filter out all nodes that have been compressed
