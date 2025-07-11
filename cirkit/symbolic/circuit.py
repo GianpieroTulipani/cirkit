@@ -333,7 +333,7 @@ class Circuit(DiAcyclicGraph[Layer]):
             if n in self._nodes
         }
 
-        super().__init__(self._layers, self._in_layers, self._outputs)
+        super().__init__(self._nodes, self._in_nodes, self._outputs)
 
 
     @property
