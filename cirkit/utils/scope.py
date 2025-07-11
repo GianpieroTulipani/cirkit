@@ -9,9 +9,13 @@ class Scope(frozenset[int]):
         return iter(sorted(super().__iter__()))
 
     def __repr__(self) -> str:
-        """Generate the repr string of the scope, for repr().
+        """Generate the repr string of the scope, for repr()."""
+        return f"Scope({set(self)})"
 
-        Returns:
-            str: The str representation of the scope.
-        """
-        return f"Scope({repr(set(self))})"  # Scope({0, 1, ...}).
+    @classmethod
+    def union(cls, *scopes: "Scope") -> "Scope":
+        """Return a new Scope which is the union of all the given scopes."""
+        all_vars: set[int] = set()
+        for s in scopes:
+            all_vars |= set(s)
+        return cls(all_vars)
