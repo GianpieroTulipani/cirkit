@@ -320,7 +320,7 @@ class Circuit(DiAcyclicGraph[Layer]):
                 to_visit.extendleft([c for c in node_children if c not in visited])
 
             # update graph metadata
-            self._out_nodes = graph_nodes_outgoings(self._nodes, self.node_inputs)
+            #self._out_nodes = graph_nodes_outgoings(self._nodes, self.node_inputs)
 
         self._nodes = list(on_the_path)
         # filter out all nodes that have been compressed
