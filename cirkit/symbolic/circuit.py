@@ -299,8 +299,6 @@ class Circuit(DiAcyclicGraph[Layer]):
                     self._in_nodes[node].remove(node_child)
                     self._in_nodes[node].extend(node_child_descendants)
 
-                    to_visit.extendleft(node_child_descendants)
-
             if isinstance(node, (SumLayer, ProductLayer)) and node in self._in_nodes:
                 node.arity = len(self._in_nodes[node])
                 if isinstance(node, SumLayer):
