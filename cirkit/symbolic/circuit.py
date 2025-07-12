@@ -7,7 +7,7 @@ from functools import cached_property
 from typing import Any
 
 from cirkit.symbolic.layers import InputLayer, Layer, ProductLayer, SumLayer
-from cirkit.symbolic.parameter import Parameter, TensorParameter
+from cirkit.symbolic.parameters import Parameter, TensorParameter
 from cirkit.symbolic.initializers import NormalInitializer
 from cirkit.utils.algorithms import (
     DiAcyclicGraph,
