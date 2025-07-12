@@ -279,6 +279,8 @@ class Circuit(DiAcyclicGraph[Layer]):
         to_visit = deque(self.outputs)
         while to_visit:
             node = to_visit.popleft()
+            if node in visited:
+                continue
             visited.add(node)
 
             node_children = self.node_inputs(node)
