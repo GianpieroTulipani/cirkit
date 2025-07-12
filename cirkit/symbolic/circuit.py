@@ -279,35 +279,30 @@ class Circuit(DiAcyclicGraph[Layer]):
         to_visit = deque(self.outputs)
         while to_visit:
             node = to_visit.popleft()
-            if node in visited:
-                continue
             visited.add(node)
 
             node_children = self.node_inputs(node)
-            #if len(node_children) > 1:
-            on_the_path.add(node)
+            if len(node_children) > 0 or isinstance(node, InputLayer):
+                on_the_path.add(node)
 
-            # inspect children, if there are some that are
-            # of the same type of this node, we can merge them
-            # on this node and visit this node again
-            for node_child in node_children:
-                if type(node) is type(node_child):
-                    node_child_descendants = [
-                        d for d in self.node_inputs(node_child) if d not in self._in_nodes[node]
-                    ]
+                for node_child in node_children:
+                    if type(node) is type(node_child):
+                        node_child_descendants = [
+                            d for d in self.node_inputs(node_child) if d not in self._in_nodes[node]
+                        ]
 
-                    self._in_nodes[node].remove(node_child)
-                    self._in_nodes[node].extend(node_child_descendants)
+                        self._in_nodes[node].remove(node_child)
+                        self._in_nodes[node].extend(node_child_descendants)
 
-            if isinstance(node, (SumLayer, ProductLayer)) and node in self._in_nodes:
-                node.arity = len(self._in_nodes[node])
-                if isinstance(node, SumLayer):
-                    new_shape = (node.num_output_units, node.num_input_units*node.arity)
-                    node.weight = Parameter.from_input(
-                        TensorParameter(*new_shape, initializer=NormalInitializer())
-                    )
+                if isinstance(node, (SumLayer, ProductLayer)):
+                    node.arity = len(self._in_nodes[node])
+                    if isinstance(node, SumLayer):
+                        new_shape = (node.num_output_units, node.num_input_units*node.arity)
+                        node.weight = Parameter.from_input(
+                            TensorParameter(*new_shape, initializer=NormalInitializer())
+                        )
 
-            to_visit.extendleft([c for c in node_children if c not in visited])
+                to_visit.extendleft([c for c in node_children if c not in visited])
 
         self._nodes = list(on_the_path)
         # filter out all nodes that have been compressed
