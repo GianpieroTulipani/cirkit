@@ -7,15 +7,14 @@ from functools import cached_property
 from typing import Any
 
 from cirkit.symbolic.layers import InputLayer, Layer, ProductLayer, SumLayer
-from cirkit.symbolic.parameters import Parameter, TensorParameter
+from cirkit.templates.utils import Parameterization, parameterization_to_factory
 from cirkit.symbolic.initializers import NormalInitializer
 from cirkit.utils.algorithms import (
     DiAcyclicGraph,
     RootedDiAcyclicGraph,
     bfs,
     subgraph,
-    topological_ordering,
-    graph_nodes_outgoings
+    topological_ordering
 )
 from cirkit.utils.scope import Scope
 
@@ -284,28 +283,28 @@ class Circuit(DiAcyclicGraph[Layer]):
             node_children = self.node_inputs(node)
             if len(node_children) > 0 or isinstance(node, InputLayer):
                 on_the_path.add(node)
+                
+                if len(node_children) > 0:
+                    for node_child in node_children:
+                        if type(node) is type(node_child):
+                            node_child_descendants = [
+                                d for d in self.node_inputs(node_child) if d not in self._in_nodes[node]
+                            ]
 
-                for node_child in node_children:
-                    if type(node) is type(node_child):
-                        node_child_descendants = [
-                            d for d in self.node_inputs(node_child) if d not in self._in_nodes[node]
-                        ]
+                            self._in_nodes[node].remove(node_child)
+                            self._in_nodes[node].extend(node_child_descendants)
 
-                        self._in_nodes[node].remove(node_child)
-                        self._in_nodes[node].extend(node_child_descendants)
-
-                if isinstance(node, (SumLayer, ProductLayer)):
                     node.arity = len(self._in_nodes[node])
                     if isinstance(node, SumLayer):
                         new_shape = (node.num_output_units, node.num_input_units*node.arity)
-                        node.weight = Parameter.from_input(
-                            TensorParameter(*new_shape, initializer=NormalInitializer())
-                        )
+                        node.weight = parameterization_to_factory(
+                            Parameterization(activation="softmax", initialization="normal")
+                            )(new_shape)
 
-                to_visit.extendleft([c for c in node_children if c not in visited])
+                    to_visit.extendleft([c for c in node_children if c not in visited])
 
         self._nodes = list(on_the_path)
-        # filter out all nodes that have been compressed
+
         self._in_nodes = {
             n: [i for i in n_inputs if i in self._nodes]
             for n, n_inputs in self._in_nodes.items()
