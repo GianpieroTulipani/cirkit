@@ -7,6 +7,8 @@ from functools import cached_property
 from typing import Any
 
 from cirkit.symbolic.layers import InputLayer, Layer, ProductLayer, SumLayer
+from cirkit.symbolic.parameter import Parameter, TensorParameter
+from cirkit.symbolic.initializers import NormalInitializer
 from cirkit.utils.algorithms import (
     DiAcyclicGraph,
     RootedDiAcyclicGraph,
@@ -294,6 +296,14 @@ class Circuit(DiAcyclicGraph[Layer]):
 
                         self._in_nodes[node].remove(node_child)
                         self._in_nodes[node].extend(node_child_descendants)
+                
+                node.arity = len(self._in_nodes[node])
+                if isinstance(node, SumLayer):
+                    new_shape = (node.num_output_units, node.num_input_units*node.arity)
+                    node.weight = Parameter.from_input(
+                        TensorParameter(*new_shape, initializer=NormalInitializer())
+
+                    )
 
                 to_visit.extendleft([c for c in node_children if c not in visited])
 
