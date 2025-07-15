@@ -274,11 +274,9 @@ class Circuit(DiAcyclicGraph[Layer]):
     
     def compress(self):
         on_the_path = set()
-        visited = set()
         to_visit = deque(self.outputs)
         while to_visit:
             node = to_visit.popleft()
-            visited.add(node)
 
             node_children = self.node_inputs(node)
             if len(node_children) > 0 or isinstance(node, InputLayer):
@@ -301,7 +299,7 @@ class Circuit(DiAcyclicGraph[Layer]):
                             Parameterization(activation="softmax", initialization="normal")
                             )(new_shape)
 
-                    to_visit.extendleft([c for c in node_children if c not in visited])
+                    to_visit.extendleft([c for c in node_children if c])
 
         self._nodes = list(on_the_path)
 
