@@ -8,7 +8,6 @@ from typing import Any
 
 from cirkit.symbolic.layers import InputLayer, Layer, ProductLayer, SumLayer
 from cirkit.templates.utils import Parameterization, parameterization_to_factory
-from cirkit.symbolic.initializers import NormalInitializer
 from cirkit.utils.algorithms import (
     DiAcyclicGraph,
     RootedDiAcyclicGraph,
