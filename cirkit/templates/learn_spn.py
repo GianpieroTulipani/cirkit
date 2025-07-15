@@ -352,7 +352,7 @@ if __name__ == "__main__":
         .to(device)
     )
 
-    alphas = [0,1, 0.5]
+    alphas = [0.1, 0.5]
     min_instances_list = [100, 500, 1000]
     mi_quantiles = [0.7, 0.5, 0.3]
     local_radii = [3, 4]
