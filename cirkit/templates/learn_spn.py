@@ -5,15 +5,17 @@ from dataclasses import dataclass
 from typing import Any, List, Tuple, Dict, Optional
 
 import torch
+from loguru import logger
 import numpy as np
 from torch import LongTensor, Tensor
 from fast_pytorch_kmeans import KMeans
 
+from cirkit.pipeline import compile
 from cirkit.symbolic.circuit import Circuit
 from cirkit.symbolic.layers import HadamardLayer, SumLayer, Layer
 from cirkit.symbolic.parameters import TensorParameter, Parameter
 from cirkit.symbolic.initializers import ConstantTensorInitializer
-from cirkit.templates.utils import name_to_input_layer_factory
+from cirkit.templates.utils import name_to_input_layer_factory, InputLayerFactory
 from cirkit.utils.scope import Scope
 
 @dataclass
@@ -68,21 +70,21 @@ class LearnSPN:
       torch.backends.cudnn.benchmark = False
 
   def _build_neighbor_map(self):
-      """
-      Build a map from each feature index to its neighbors within L1 radius.
-      """
-      H, W = self.image_shape
-      n = H*W
-      coords = {i: (i // W, i % W) for i in range(n)}
-      self.neighbor_map: Dict[int,List[int]] = {}
-      for i in range(n):
-          y_i, x_i = coords[i]
-          nbrs = []
-          for j in range(n):
-              y_j, x_j = coords[j]
-              if abs(y_i - y_j) + abs(x_i - x_j) <= self.local_radius:
-                  nbrs.append(j)
-          self.neighbor_map[i] = nbrs
+    """
+    Build a map from each feature index to its neighbors within L1 radius.
+    """
+    H, W = self.image_shape
+    n = H*W
+    coords = {i: (i // W, i % W) for i in range(n)}
+    self.neighbor_map: Dict[int,List[int]] = {}
+    for i in range(n):
+      y_i, x_i = coords[i]
+      nbrs = []
+      for j in range(n):
+        y_j, x_j = coords[j]
+        if abs(y_i - y_j) + abs(x_i - x_j) <= self.local_radius:
+          nbrs.append(j)
+      self.neighbor_map[i] = nbrs
 
   def learn(
       self,
@@ -93,6 +95,7 @@ class LearnSPN:
   ) -> Circuit:
       N, D = data.shape
       num_categories = int(data.max().item() + 1)
+      input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
       tid = 0
       layers: List[Layer] = []
@@ -107,14 +110,14 @@ class LearnSPN:
 
           if V_s.numel() == 1:
               leaf = self._make_leaf_layer(int(V_s), T_s, data,
-                                            num_input_units, num_categories, input_layer)
+                                            num_input_units, num_categories, input_factory)
               layers.append(leaf)
               in_layers.setdefault(parent, []).append(leaf)
               continue
 
           if T_s.numel() <= self.min_instances:
               feats = [self._make_leaf_layer(int(f), T_s, data,
-                            num_input_units, num_categories, input_layer)
+                            num_input_units, num_categories, input_factory)
                         for f in V_s.tolist()]
               node = HadamardLayer(num_input_units, arity=len(feats))
               layers.extend(feats); layers.append(node)
@@ -128,7 +131,7 @@ class LearnSPN:
             V_dep, V_indep = self._split_features_local(V_s, T_s, data, num_categories)
             fs_time = time.time() - start_fs
             self.total_feature_split_time += fs_time
-            print(f"[Feature Split] Task {task.id} | Time: {fs_time:.4f} sec | Dep: {V_dep.numel()} Indep: {V_indep.numel()}")
+            #print(f"[Feature Split] Task {task.id} | Time: {fs_time:.4f} sec | Dep: {V_dep.numel()} Indep: {V_indep.numel()}")
 
             if V_indep.numel() > 0:
                 node = HadamardLayer(num_input_units, arity=2)
@@ -142,11 +145,11 @@ class LearnSPN:
           T1, T2 = self._cluster_instances(V_s, T_s, data)
           is_time = time.time() - start_is
           self.total_instance_split_time += is_time
-          print(f"[Instance Split] Task {task.id} | Time: {is_time:.4f} sec | T1: {T1.numel()} T2: {T2.numel()}")
+          #print(f"[Instance Split] Task {task.id} | Time: {is_time:.4f} sec | T1: {T1.numel()} T2: {T2.numel()}")
 
           if T1.numel() == 0 or T2.numel() == 0:
               feats = [ self._make_leaf_layer(int(f), T_s, data,
-                            num_input_units, num_categories, input_layer)
+                            num_input_units, num_categories, input_factory)
                         for f in V_s.tolist() ]
               node = HadamardLayer(num_input_units, arity=len(feats))
               layers.extend(feats); layers.append(node)
@@ -156,7 +159,7 @@ class LearnSPN:
 
           w1 = T1.numel()/float(T1.numel()+T2.numel()); w2 = 1.0-w1
           mix = np.array([[w1,w2]],dtype=float)
-          tp = TensorParameter(num_sum_units,2,initializer=ConstantTensorInitializer(mix),learnable=False)
+          tp = TensorParameter(num_sum_units, 2, initializer=ConstantTensorInitializer(mix),learnable=True)
           mixing = Parameter.from_input(tp)
           node = SumLayer(num_input_units=num_sum_units,num_output_units=1,arity=2,weight=mixing)
           layers.append(node)
@@ -188,15 +191,15 @@ class LearnSPN:
       sub = data.index_select(0, T_s).index_select(1, V_s)
       n = V_s.numel()
 
-      idx_map = {int(v.item()): i for i, v in enumerate(V_s.tolist())}
+      idx_map = {int(v): i for i, v in enumerate(V_s.tolist())}
 
       pairs = []
       for i, feat_i in enumerate(V_s.tolist()):
-          for feat_j in self.neighbor_map[int(feat_i)]:
-              if feat_j in idx_map:
-                  j = idx_map[feat_j]
-                  if j > i:
-                      pairs.append((i, j))
+        for feat_j in self.neighbor_map[int(feat_i)]:
+          if feat_j in idx_map:
+            j = idx_map[feat_j]
+            if j > i:
+              pairs.append((i, j))
 
       if not pairs:
           return V_s, torch.empty(0, dtype=torch.long, device=data.device)
@@ -266,19 +269,18 @@ class LearnSPN:
       data: LongTensor,
       num_input_units: int,
       num_categories: int,
-      input_layer: str
+      input_factory: InputLayerFactory
   ) -> Any:
       col = data[instance_ids, feat_idx]
-      counts = torch.bincount(col, minlength=num_categories + 1).float()
+      counts = torch.bincount(col, minlength=num_categories).float()
       counts += self.alpha
       probs = counts / counts.sum()
       proto = probs.cpu().numpy().astype(float)
       tp = TensorParameter(num_input_units, probs.numel(),
                             initializer=ConstantTensorInitializer(proto),
-                            learnable=False)
+                            learnable=True)
       param = Parameter.from_input(tp)
-      factory = name_to_input_layer_factory(input_layer, num_categories=probs.numel())
-      return factory(Scope([feat_idx]), num_input_units, probs=param)
+      return input_factory(Scope([feat_idx]), num_input_units, probs=param)
 
 def _pairwise_mutual_info(
     x1: LongTensor,
@@ -309,3 +311,93 @@ def _pairwise_mutual_info(
 
     mi = joint_probs * (joint_probs.log() - prod.log())
     return mi.sum(dim=(1,2))
+
+
+from torch.utils.data import DataLoader, TensorDataset
+from cirkit.pipeline import compile
+from torchvision import datasets
+import itertools
+import torch
+import gc
+
+def compute_log_likelihood_in_batches(circuit, data, batch_size=512):
+  data_loader = DataLoader(TensorDataset(data), batch_size=batch_size)
+  log_likelihoods = []
+
+  with torch.no_grad():
+      for (batch,) in data_loader:
+          ll = circuit(batch).cpu()
+          log_likelihoods.append(ll)
+
+  return torch.cat(log_likelihoods).mean().item()
+
+
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    mnist_train = datasets.MNIST(root="datasets", train=True,  download=True)
+    mnist_test  = datasets.MNIST(root="datasets", train=False, download=True)
+
+    X_train = (
+        mnist_train.data
+        .view(-1, 28*28)
+        .long()
+        .to(device)
+    )
+
+    X_test  = (
+        mnist_test.data
+        .view(-1, 28*28)
+        .long()
+        .to(device)
+    )
+
+    alphas = [0,1, 0.5]
+    min_instances_list = [100, 500, 1000]
+    mi_quantiles = [0.7, 0.5, 0.3]
+    local_radii = [3, 4]
+
+    results = []
+
+    for alpha, min_instances, mi_quantile, local_radius in itertools.product(alphas, min_instances_list, mi_quantiles, local_radii):
+        logger.info(f"Training with alpha={alpha}, min_instances={min_instances}, mi_quantile={mi_quantile}, local_radius={local_radius}")
+        
+        spn_learner = LearnSPN(
+            alpha=alpha,
+            min_instances=min_instances,
+            mi_quantile=mi_quantile,
+            local_radius=local_radius
+        )
+        
+        symbolic_circuit = spn_learner.learn(X_train, 'categorical')
+        circuit = compile(symbolic_circuit).to(device)
+
+        test_ll = compute_log_likelihood_in_batches(circuit, X_test)
+
+        bpd_test = (-test_ll) / (28 * 28 * np.log(2.0))
+
+        result = {
+            "alpha": alpha,
+            "min_instances": min_instances,
+            "mi_quantile": mi_quantile,
+            "local_radius": local_radius,
+            "test_ll": test_ll,
+            "bpd_test": bpd_test,
+        }
+
+        del spn_learner
+        del symbolic_circuit
+        del circuit
+        del test_ll
+        del bpd_test
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        logger.info(f"Results: {result}")
+        results.append(result)
+
+    results.sort(key=lambda x: x['bpd_test'])
+
+    logger.info("\nTop 3 configurations:")
+    for res in results[:3]:
+        logger.info(res)
