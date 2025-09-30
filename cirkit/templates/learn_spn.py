@@ -5,16 +5,14 @@ from typing import Any, List, Tuple, Dict, Optional
 import copy
 
 import numpy as np
-import gc
 import torch
 import torch.nn.functional as F
 from torch import LongTensor, Tensor
-from tqdm import tqdm
-from loguru import logger
 
 from fast_pytorch_kmeans import KMeans
 
 from cirkit.symbolic.circuit import Circuit
+from cirkit.templates.miwae import ConvVAE
 from cirkit.symbolic.layers import HadamardLayer, SumLayer, Layer
 from cirkit.symbolic.parameters import TensorParameter, Parameter
 from cirkit.symbolic.initializers import ConstantTensorInitializer
@@ -41,7 +39,11 @@ class LearnSPN:
         local_radius: int = 4,
         image_shape: Tuple[int, int] = (28, 28),
         seed: Optional[int] = 42,
-        jitter_scale: float = 1e-2
+        jitter_scale: float = 1e-2,
+        use_miwae: bool = False,
+        latent_dim: int = 50,
+        weight_dir: str = None,
+
     ):
         if seed is not None:
             self._set_seed(seed)
@@ -55,7 +57,16 @@ class LearnSPN:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.jitter_scale = jitter_scale
+        self.use_miwae = use_miwae
 
+        if use_miwae:
+            self.miwae = ConvVAE(input_channel=1, latent_dim=latent_dim).to(self.device)
+            if weight_dir is not None:
+                self.miwae.load_state_dict(torch.load(weight_dir, map_location=self.device))
+            self.miwae.eval()
+            for param in self.miwae.parameters():
+                param.requires_grad = False
+        
         self._build_neighbor_map()
 
     def _set_seed(self, seed: int):
@@ -69,13 +80,13 @@ class LearnSPN:
     def _build_neighbor_map(self):
         H, W = self.image_shape
         n = H * W
-        coords = {i: (i // W, i % W) for i in range(n)}
+        self.coords = {i: (i // W, i % W) for i in range(n)}
         self.neighbor_map: Dict[int, List[int]] = defaultdict(list)
         for i in range(n):
-            y_i, x_i = coords[i]
+            y_i, x_i = self.coords[i]
             nbrs = []
             for j in range(n):
-                y_j, x_j = coords[j]
+                y_j, x_j = self.coords[j]
                 if abs(y_i - y_j) + abs(x_i - x_j) <= self.local_radius:
                     nbrs.append(j)
             self.neighbor_map[i] = nbrs
@@ -262,11 +273,30 @@ class LearnSPN:
         mode: str = "euclidean"
     ) -> Tuple[LongTensor, LongTensor]:
         
-        sub = data.index_select(0, T_s).index_select(1, V_s).float()
         kmeans = KMeans(n_clusters=n_clusters,
                         mode=mode,
-                        verbose=0)
-        labels = kmeans.fit_predict(sub)
+                        verbose=0
+                        )
+        
+        if self.use_miwae:
+            H, W = self.image_shape
+            N = T_s.numel()
+            sub = data.index_select(0, T_s)
+            imgs = torch.zeros((N, 1, H, W), device=self.device, dtype=torch.float32)
+
+            for feat_idx in V_s.tolist():
+                y, x = self.coords[feat_idx]
+                imgs[:, 0, y, x] = sub[:, feat_idx].float() / 255.0
+            
+            with torch.no_grad():
+                mu, log_var, _, _ = self.miwae.encoder(imgs)
+                embeddings = torch.cat([mu, log_var], dim=1).detach()
+
+            labels = kmeans.fit_predict(embeddings)
+        else:
+            sub = data.index_select(0, T_s).index_select(1, V_s).float()
+            labels = kmeans.fit_predict(sub)
+            
         return T_s[labels == 0], T_s[labels == 1]
 
     def _make_leaf_layer_estimated(
