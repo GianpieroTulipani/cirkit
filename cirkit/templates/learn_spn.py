@@ -63,9 +63,6 @@ class LearnSPN:
             self.miwae = ConvVAE(input_channel=1, latent_dim=latent_dim).to(self.device)
             if weight_dir is not None:
                 self.miwae.load_state_dict(torch.load(weight_dir, map_location=self.device))
-            self.miwae.eval()
-            for param in self.miwae.parameters():
-                param.requires_grad = False
         
         self._build_neighbor_map()
 
@@ -296,7 +293,7 @@ class LearnSPN:
         else:
             sub = data.index_select(0, T_s).index_select(1, V_s).float()
             labels = kmeans.fit_predict(sub)
-            
+
         return T_s[labels == 0], T_s[labels == 1]
 
     def _make_leaf_layer_estimated(
