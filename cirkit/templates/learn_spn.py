@@ -1,8 +1,7 @@
 import random
 from dataclasses import dataclass
-from collections import defaultdict, deque
+from collections import defaultdict
 from typing import Any, List, Tuple, Dict, Optional
-import copy
 
 import numpy as np
 import torch
@@ -88,7 +87,6 @@ class LearnSPN:
                     nbrs.append(j)
             self.neighbor_map[i] = nbrs
 
-
     def learn(
         self,
         data: LongTensor,
@@ -129,8 +127,6 @@ class LearnSPN:
             layers.append(layer)
             in_layers.setdefault(parent, []).append(layer)
 
-        def _handle_single_feature(V_s: LongTensor, T_s: LongTensor, parent):
-            _make_leaf_and_attach(V_s, T_s, parent)
 
         def _handle_small_instances(V_s: LongTensor, T_s: LongTensor, parent):
             if use_estimated:
@@ -154,7 +150,11 @@ class LearnSPN:
                 return
 
             if use_estimated:
-                layer = self._make_sum_layer_estimated(T1, T2, num_input_units, num_sum_units, activation)
+                if parent is not None:
+                    layer = self._make_sum_layer_estimated(T1, T2, num_input_units, num_sum_units, activation)
+                else:
+                    layer = self._make_sum_layer_estimated(T1, T2, num_input_units, 1, activation)
+                    root.append(layer)
             else:
                 if parent is not None:
                     layer = SumLayer(num_input_units=parent.num_input_units, num_output_units=num_sum_units, arity=2, weight_factory=sum_weight_factory)
@@ -163,11 +163,8 @@ class LearnSPN:
                     root.append(layer)
 
             layers.append(layer)
-
-            if parent is None and use_estimated:
-                root.append(layer)
-
-            in_layers.setdefault(parent, []).append(layer)
+            if parent is not None:
+                in_layers.setdefault(parent, []).append(layer)
 
             stack.append(Task(V_s, T2, layer))
             stack.append(Task(V_s, T1, layer))
@@ -179,7 +176,7 @@ class LearnSPN:
             V_s, T_s, parent = task.V_s, task.T_s, task.parent
 
             if V_s.numel() == 1:
-                _handle_single_feature(V_s, T_s, parent)
+                _make_leaf_and_attach(V_s, T_s, parent)
                 continue
 
             if T_s.numel() <= self.min_instances:
