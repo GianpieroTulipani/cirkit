@@ -317,7 +317,7 @@ class LearnSPN:
         else:
             base = np.log(probs_np)
             logits = np.tile(base.reshape(1, num_categories), (num_input_units, 1))
-            if self.jitter_scale and self.jitter_scale > 0.0:
+            if self.jitter_scale and self.jitter_scale > 0.0 and num_input_units > 1:
                 logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
 
         tp = TensorParameter(num_input_units, num_categories, initializer=ConstantTensorInitializer(logits), learnable=True)
@@ -347,7 +347,7 @@ class LearnSPN:
         rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, 2 * num_input_units)
 
         logits = np.log(rep_weights_flat)
-        if self.jitter_scale and self.jitter_scale > 0.0:
+        if self.jitter_scale and self.jitter_scale > 0.0 and num_sum_units > 1:
             logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
 
         tp = TensorParameter(
