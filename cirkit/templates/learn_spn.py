@@ -39,6 +39,7 @@ class LearnSPN:
         image_shape: Tuple[int, int] = (28, 28),
         seed: Optional[int] = 42,
         jitter_scale: float = 1e-2,
+        dirichlet_alpha: float = 1.0,
         use_miwae: bool = False,
         latent_dim: int = 50,
         weight_dir: str = None,
@@ -56,6 +57,7 @@ class LearnSPN:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.jitter_scale = jitter_scale
+        self.dirichlet_alpha = dirichlet_alpha
         self.use_miwae = use_miwae
 
         if use_miwae:
@@ -336,9 +338,19 @@ class LearnSPN:
         w2 = 1.0 - w1
         mix_weights = np.array([w1, w2], dtype=float)
 
+        if self.dirichlet_alpha and self.dirichlet_alpha > 0.0 and num_sum_units > 1:
+            alpha_vec = mix_weights * self.dirichlet_alpha
+            rng = np.random.RandomState()
+            mix_weights = np.stack([rng.dirichlet(alpha_vec) for _ in range(num_sum_units)])
+            print(mix_weights.shape)
+
         rep_weights = np.tile(mix_weights.reshape(1, 2), (num_sum_units, 1))
+        print(rep_weights.shape)
         rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, 2, 1), (1, 1, num_input_units))
+        print(rep_weights_expandend.shape)
         rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, 2 * num_input_units)
+        print(rep_weights_flat.shape)
+        print(' ')
 
         logits = np.log(rep_weights_flat)
         if self.jitter_scale and self.jitter_scale > 0.0:
