@@ -334,14 +334,17 @@ class LearnSPN:
         w1 = T1.numel() / float(T1.numel() + T2.numel())
         w2 = 1.0 - w1
         mix_weights = np.array([w1, w2], dtype=float)
-
-        rep_weights = np.tile(mix_weights.reshape(1, 2), (num_sum_units, 1))
-        rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, 2, 1), (1, 1, num_input_units))
-        rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, 2 * num_input_units)
-
-        logits = np.log(rep_weights_flat)
-        if self.jitter_scale and self.jitter_scale > 0.0 and num_sum_units > 1:
-            logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
+        
+        if num_input_units == 1:
+            logits = np.log(mix_weights).reshape(1, 2)
+        else:
+            rep_weights = np.tile(mix_weights.reshape(1, 2), (num_sum_units, 1))
+            rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, 2, 1), (1, 1, num_input_units))
+            rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, 2 * num_input_units)
+            
+            logits = np.log(rep_weights_flat)
+            if self.jitter_scale and self.jitter_scale > 0.0:
+                logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
 
         tp = TensorParameter(
             num_sum_units,
