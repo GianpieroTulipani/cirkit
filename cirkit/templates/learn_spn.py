@@ -40,7 +40,6 @@ class LearnSPN:
         seed: Optional[int] = 42,
         jitter_scale: float = 1e-2,
         use_miwae: bool = False,
-        latent_dim: int = 50,
         weight_dir: str = None,
 
     ):
@@ -59,7 +58,7 @@ class LearnSPN:
         self.use_miwae = use_miwae
 
         if use_miwae:
-            self.miwae = ConvVAE(input_channel=1, latent_dim=latent_dim).to(self.device)
+            self.miwae = ConvVAE(input_channel=1, latent_dim=50).to(self.device)
             if weight_dir is not None:
                 self.miwae.load_state_dict(torch.load(weight_dir, map_location=self.device))
         
@@ -336,16 +335,13 @@ class LearnSPN:
         w2 = 1.0 - w1
         mix_weights = np.array([w1, w2], dtype=float)
 
-        if num_sum_units == 1:
-            logits = np.log(mix_weights).reshape(1, 2)
-        else:
-            rep_weights = np.tile(mix_weights.reshape(1, 2), (num_sum_units, 1))
-            rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, 2, 1), (1, 1, num_input_units))
-            rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, 2 * num_input_units)
+        rep_weights = np.tile(mix_weights.reshape(1, 2), (num_sum_units, 1))
+        rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, 2, 1), (1, 1, num_input_units))
+        rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, 2 * num_input_units)
 
-            logits = np.log(rep_weights_flat)
-            if self.jitter_scale and self.jitter_scale > 0.0:
-                logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
+        logits = np.log(rep_weights_flat)
+        if self.jitter_scale and self.jitter_scale > 0.0 and num_sum_units > 1:
+            logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
 
         tp = TensorParameter(
             num_sum_units,
