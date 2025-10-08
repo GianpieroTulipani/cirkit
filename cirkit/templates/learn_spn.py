@@ -342,15 +342,9 @@ class LearnSPN:
             alpha_vec = mix_weights * self.dirichlet_alpha
             rng = np.random.RandomState()
             mix_weights = np.stack([rng.dirichlet(alpha_vec) for _ in range(num_sum_units)])
-            print(mix_weights.shape)
 
-        #rep_weights = np.tile(mix_weights.reshape(1, 2), (num_sum_units, 1))
-        #print(rep_weights.shape)
         rep_weights_expandend = np.tile(mix_weights.reshape(num_sum_units, 2, 1), (1, 1, num_input_units))
-        print(rep_weights_expandend.shape)
         rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, 2 * num_input_units)
-        print(rep_weights_flat.shape)
-        print(' ')
 
         logits = np.log(rep_weights_flat)
         if self.jitter_scale and self.jitter_scale > 0.0:
