@@ -317,7 +317,7 @@ class LearnSPN:
         else:
             base = np.log(probs_np)
             logits = np.tile(base.reshape(1, num_categories), (num_input_units, 1))
-            if self.jitter_scale and self.jitter_scale > 0.0 and num_input_units > 1:
+            if self.jitter_scale and self.jitter_scale > 0.0:
                 logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
 
         tp = TensorParameter(num_input_units, num_categories, initializer=ConstantTensorInitializer(logits), learnable=True)
@@ -338,17 +338,16 @@ class LearnSPN:
         w2 = 1.0 - w1
         mix_weights = np.array([w1, w2], dtype=float)
 
-        if self.dirichlet_alpha and self.dirichlet_alpha > 0.0 and num_sum_units > 1:
-            alpha_vec = mix_weights * self.dirichlet_alpha
-            rng = np.random.RandomState()
-            mix_weights = np.stack([rng.dirichlet(alpha_vec) for _ in range(num_sum_units)])
+        if num_sum_units == 1:
+            logits = np.log(mix_weights).reshape(1, 2)
+        else:
+            rep_weights = np.tile(mix_weights.reshape(1, 2), (num_sum_units, 1))
+            rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, 2, 1), (1, 1, num_input_units))
+            rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, 2 * num_input_units)
 
-        rep_weights_expandend = np.tile(mix_weights.reshape(num_sum_units, 2, 1), (1, 1, num_input_units))
-        rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, 2 * num_input_units)
-
-        logits = np.log(rep_weights_flat)
-        if self.jitter_scale and self.jitter_scale > 0.0 and num_sum_units > 1:
-            logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
+            logits = np.log(rep_weights_flat)
+            if self.jitter_scale and self.jitter_scale > 0.0:
+                logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
 
         tp = TensorParameter(
             num_sum_units,
