@@ -39,7 +39,6 @@ class LearnSPN:
         image_shape: Tuple[int, int] = (28, 28),
         seed: Optional[int] = 42,
         jitter_scale: float = 1e-2,
-        dirichlet_alpha: float = 1.0,
         use_miwae: bool = False,
         latent_dim: int = 50,
         weight_dir: str = None,
@@ -57,7 +56,6 @@ class LearnSPN:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.jitter_scale = jitter_scale
-        self.dirichlet_alpha = dirichlet_alpha
         self.use_miwae = use_miwae
 
         if use_miwae:
