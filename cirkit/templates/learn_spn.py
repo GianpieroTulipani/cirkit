@@ -76,7 +76,7 @@ class LearnSPN:
         torch.backends.cudnn.benchmark = False
 
     def _build_neighbor_map(self):
-        H, W = self.image_shape
+        _, H, W = self.image_shape
         n = H * W
         self.coords = {i: (i // W, i % W) for i in range(n)}
         self.neighbor_map: Dict[int, List[int]] = defaultdict(list)
@@ -113,11 +113,11 @@ class LearnSPN:
             sum_weight_param = Parameterization(activation=activation, initialization=initialization)
             sum_weight_factory = parameterization_to_factory(sum_weight_param)
 
-        def _make_leaf_and_attach(feature_index: int, T_s: LongTensor, parent):
+        def _make_leaf_and_attach(feat_ids: int, instance_ids: LongTensor, parent):
             if use_estimated:
                 layer = self._make_leaf_layer_estimated(
-                    feature_index,
-                    T_s,
+                    feat_ids,
+                    instance_ids,
                     data,
                     num_input_units,
                     num_categories,
@@ -125,19 +125,19 @@ class LearnSPN:
                     input_factory,
                 )
             else:
-                layer = input_factory(Scope([feature_index]), num_input_units)
+                layer = input_factory(Scope([feat_ids]), num_input_units)
             layers.append(layer)
             in_layers.setdefault(parent, []).append(layer)
 
 
-        def _handle_small_instances(V_s: LongTensor, T_s: LongTensor, parent):
+        def _handle_small_instances(feat_ids: LongTensor, instance_ids: LongTensor, parent):
             if use_estimated:
                 feats = [
-                    self._make_leaf_layer_estimated(int(f), T_s, data, num_input_units, num_categories, activation, input_factory)
-                    for f in V_s.tolist()
+                    self._make_leaf_layer_estimated(int(f), instance_ids, data, num_input_units, num_categories, activation, input_factory)
+                    for f in feat_ids.tolist()
                 ]
             else:
-                feats = [input_factory(Scope([int(v)]), num_input_units) for v in V_s.tolist()]
+                feats = [input_factory(Scope([int(v)]), num_input_units) for v in feat_ids.tolist()]
                 
             layer = HadamardLayer(num_input_units, arity=len(feats))
             layers.extend(feats)
@@ -382,10 +382,10 @@ class LearnSPN:
                         )
         
         if self.use_miwae:
-            H, W = self.image_shape
+            C, H, W = self.image_shape
             N = instance_ids.numel()
             sub = data.index_select(0, instance_ids)
-            imgs = torch.zeros((N, 1, H, W), device=self.device, dtype=torch.float32)
+            imgs = torch.zeros((N, C, H, W), device=self.device, dtype=torch.float32)
 
             for feat_idx in feat_ids.tolist():
                 y, x = self.coords[feat_idx]
