@@ -1,6 +1,6 @@
 import random
 from dataclasses import dataclass
-from collections import defaultdict
+from collections import defaultdict, deque
 from typing import Any, List, Tuple, Dict, Optional
 
 import numpy as np
@@ -21,12 +21,14 @@ from cirkit.templates.utils import (
     parameterization_to_factory,
     name_to_parameter_activation,
 )
+from cirkit.templates.region_graph.algorithms import QuadGraph
+from cirkit.templates.region_graph import RegionNode, PartitionNode, RegionGraphNode
 from cirkit.utils.scope import Scope
 
 @dataclass
 class Task:
-    V_s: LongTensor
-    T_s: LongTensor
+    feat_ids: LongTensor
+    instance_ids: LongTensor
     parent: Optional[Layer]
 
 class LearnSPN:
@@ -36,12 +38,12 @@ class LearnSPN:
         min_instances: int = 500,
         mi_quantile: float = 0.5,
         local_radius: int = 4,
-        image_shape: Tuple[int, int] = (28, 28),
+        image_shape: Tuple[int, int] = (1, 28, 28),
         seed: Optional[int] = 42,
         jitter_scale: float = 1e-2,
         use_miwae: bool = False,
         weight_dir: str = None,
-
+        device: Optional[torch.device] = None
     ):
         if seed is not None:
             self._set_seed(seed)
@@ -50,9 +52,10 @@ class LearnSPN:
         self.min_instances = min_instances
         self.mi_quantile = mi_quantile
         self.local_radius = local_radius
+        assert len(image_shape) == 3, "image_shape should be (C, H, W)"
         self.image_shape = image_shape
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device if device is not None else (torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
         self.jitter_scale = jitter_scale
         self.use_miwae = use_miwae
@@ -86,7 +89,7 @@ class LearnSPN:
                     nbrs.append(j)
             self.neighbor_map[i] = nbrs
 
-    def learn(
+    def learn_spn(
         self,
         data: LongTensor,
         input_layer: str = "categorical",
@@ -142,17 +145,17 @@ class LearnSPN:
             in_layers[layer] = feats
             in_layers.setdefault(parent, []).append(layer)
 
-        def _handle_cluster_split(V_s: LongTensor, T_s: LongTensor, parent):
-            T1, T2 = self._cluster_instances(V_s, T_s, data)
-            if T1.numel() == 0 or T2.numel() == 0:
-                _handle_small_instances(V_s, T_s, parent)
+        def _handle_cluster_split(feat_ids: LongTensor, instance_ids: LongTensor, parent):
+            clusters = self._cluster_instances(feat_ids, instance_ids, data)
+            if clusters[0].numel() == 0 or clusters[1].numel() == 0:
+                _handle_small_instances(feat_ids, instance_ids, parent)
                 return
 
             if use_estimated:
                 if parent is not None:
-                    layer = self._make_sum_layer_estimated(T1, T2, num_input_units, num_sum_units, activation)
+                    layer = self._make_sum_layer_estimated(clusters, num_input_units, num_sum_units, activation)
                 else:
-                    layer = self._make_sum_layer_estimated(T1, T2, num_input_units, 1, activation)
+                    layer = self._make_sum_layer_estimated(clusters, num_input_units, 1, activation)
                     root.append(layer)
             else:
                 if parent is not None:
@@ -165,55 +168,158 @@ class LearnSPN:
             if parent is not None:
                 in_layers.setdefault(parent, []).append(layer)
 
-            stack.append(Task(V_s, T2, layer))
-            stack.append(Task(V_s, T1, layer))
+            stack.append(Task(instance_ids, clusters[1], layer))
+            stack.append(Task(instance_ids, clusters[0], layer))
 
         stack = [Task(torch.arange(D, device=self.device), torch.arange(N, device=self.device), None)]
 
         while stack:
             task = stack.pop()
-            V_s, T_s, parent = task.V_s, task.T_s, task.parent
+            feat_ids, instance_ids, parent = task.feat_ids, task.instance_ids, task.parent
 
-            if V_s.numel() == 1:
-                _make_leaf_and_attach(V_s, T_s, parent)
+            if feat_ids.numel() == 1:
+                _make_leaf_and_attach(feat_ids, instance_ids, parent)
                 continue
 
-            if T_s.numel() <= self.min_instances:
-                _handle_small_instances(V_s, T_s, parent)
+            if instance_ids.numel() <= self.min_instances:
+                _handle_small_instances(feat_ids, instance_ids, parent)
                 continue
 
             if parent is not None:
-                V_dep, V_indep = self._split_features_local(V_s, T_s, data, num_categories)
+                V_dep, V_indep = self._split_features_local(feat_ids, instance_ids, data, num_categories)
                 if V_indep.numel() > 0:
                     layer = HadamardLayer(num_input_units, arity=2)
                     layers.append(layer)
                     in_layers.setdefault(parent, []).append(layer)
 
-                    stack.append(Task(V_indep, T_s, layer))
-                    stack.append(Task(V_dep, T_s, layer))
+                    stack.append(Task(V_indep, instance_ids, layer))
+                    stack.append(Task(V_dep, instance_ids, layer))
                     continue
 
-            _handle_cluster_split(V_s, T_s, parent)
+            _handle_cluster_split(feat_ids, instance_ids, parent)
 
-        symbolic_circuit = Circuit(layers, in_layers, root)
+        return Circuit(layers, in_layers, root)
 
-        return symbolic_circuit
+    def quad_spn(
+        self,
+        data: LongTensor,
+        input_layer: str = 'categorical',
+        activation: str = 'softmax',
+        num_input_units: int = 1,
+        num_sum_units: int = 1
+    ) -> Circuit:
+
+        layers: List[Layer] = []
+        in_layers: Dict[Layer, List[Layer]] = {}
+        node_to_layer: Dict[RegionGraphNode, Layer] = {}
+    
+        qg = QuadGraph(self.image_shape)
+        num_categories = int(data.max().item() + 1)
+        input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
+    
+        all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
+
+        queue = deque([(out, None, all_rows) for out in qg.outputs])
+
+        while queue:
+            node, parent_layer, rows_idx = queue.popleft()
+            if isinstance(node, RegionNode) and not qg.region_inputs(node):
+                scope_vars = list(node.scope)
+    
+                if len(scope_vars) == 1:
+                    feat = int(scope_vars[0])
+
+                    layer = self._make_leaf_layer_estimated(
+                        feat_idx=feat,
+                        instance_ids=rows_idx,
+                        data=data,
+                        num_input_units=num_input_units,
+                        num_categories=num_categories,
+                        activation=activation,
+                        input_factory=input_factory
+                    )
+                    layers.append(layer)
+                    node_to_layer[node] = layer
+    
+                else:
+                    feat_layers: List[Layer] = []
+                    for sc in scope_vars:
+                        in_layer = self._make_leaf_layer_estimated(
+                            feat_idx=int(sc),
+                            instance_ids=rows_idx,
+                            data=data,
+                            num_input_units=num_input_units,
+                            num_categories=num_categories,
+                            activation=activation,
+                            input_factory=input_factory
+                        )
+                        layers.append(in_layer)
+                        feat_layers.append(in_layer)
+    
+                    layer = HadamardLayer(num_input_units, arity=len(feat_layers))
+                    layers.append(layer)
+                    in_layers[layer] = feat_layers
+                    node_to_layer[node] = layer
+    
+            elif isinstance(node, RegionNode):
+                children = qg.region_inputs(node)
+
+                arity = len(children)
+    
+                feat_ids = torch.tensor(list(node.scope), dtype=torch.long, device=data.device)
+                
+                clusters = self._cluster_instances(data, feat_ids, rows_idx, arity)
+                if parent_layer is None:
+                    layer = self._make_sum_layer_estimated(
+                        clusters=clusters,
+                        num_input_units=num_input_units,
+                        num_sum_units=1,
+                        activation=activation,
+                    )
+                else:
+                    layer = self._make_sum_layer_estimated(
+                        clusters=clusters,
+                        num_input_units=num_input_units,
+                        num_sum_units=num_sum_units,
+                        activation=activation,
+                    )
+                layers.append(layer)
+                node_to_layer[node] = layer
+    
+                for child_node, cluster_ids in zip(children, clusters):
+                    queue.append((child_node, layer, cluster_ids))
+    
+            elif isinstance(node, PartitionNode):
+                children = qg.partition_inputs(node)
+                layer = HadamardLayer(num_sum_units, arity=len(children))
+                layers.append(layer)
+                node_to_layer[node] = layer
+    
+                for child_node in children:
+                    queue.append((child_node, layer, rows_idx))
+    
+            if parent_layer is not None:
+                parent_list = in_layers.setdefault(parent_layer, [])
+                parent_list.append(node_to_layer[node])
+    
+        outputs = [node_to_layer[rgn] for rgn in qg.outputs]
+        return Circuit(layers, in_layers, outputs)
 
     def _split_features_local(
         self,
-        V_s: LongTensor,
-        T_s: LongTensor,
+        feat_ids: LongTensor,
+        instance_ids: LongTensor,
         data: Tensor,
         num_categories: int,
         chunk_size: int = 1000,
     ) -> Tuple[LongTensor, LongTensor]:
-        sub = data.index_select(0, T_s).index_select(1, V_s)
-        n = V_s.numel()
+        sub = data.index_select(0, instance_ids).index_select(1, feat_ids)
+        n = feat_ids.numel()
 
-        idx_map = {int(v): i for i, v in enumerate(V_s.tolist())}
+        idx_map = {int(v): i for i, v in enumerate(feat_ids.tolist())}
 
         pairs = []
-        for i, feat_i in enumerate(V_s.tolist()):
+        for i, feat_i in enumerate(feat_ids.tolist()):
             for feat_j in self.neighbor_map[int(feat_i)]:
                 if feat_j in idx_map:
                     j = idx_map[feat_j]
@@ -221,7 +327,7 @@ class LearnSPN:
                         pairs.append((i, j))
 
         if not pairs:
-            return V_s, torch.empty(0, dtype=torch.long, device=data.device)
+            return feat_ids, torch.empty(0, dtype=torch.long, device=data.device)
 
         idx_i = torch.tensor([p[0] for p in pairs], device=sub.device)
         idx_j = torch.tensor([p[1] for p in pairs], device=sub.device)
@@ -254,17 +360,21 @@ class LearnSPN:
                 visited[v] = True
                 stack.append(v)
 
-        V_dep = V_s[visited]
-        V_indep = V_s[~visited]
+        V_dep = feat_ids[visited]
+        V_indep = feat_ids[~visited]
         return V_dep, V_indep
 
     def _cluster_instances(
-        self, V_s: LongTensor, 
-        T_s: LongTensor, 
+        self, 
+        feat_ids: LongTensor, 
+        instance_ids: LongTensor, 
         data: Tensor, 
         n_clusters: int = 2, 
         mode: str = "euclidean"
     ) -> Tuple[LongTensor, LongTensor]:
+        
+        if instance_ids.numel() == 0:
+            return [instance_ids.new_empty((0,), dtype=torch.long) for _ in range(n_clusters)]
         
         kmeans = KMeans(n_clusters=n_clusters,
                         mode=mode,
@@ -273,11 +383,11 @@ class LearnSPN:
         
         if self.use_miwae:
             H, W = self.image_shape
-            N = T_s.numel()
-            sub = data.index_select(0, T_s)
+            N = instance_ids.numel()
+            sub = data.index_select(0, instance_ids)
             imgs = torch.zeros((N, 1, H, W), device=self.device, dtype=torch.float32)
 
-            for feat_idx in V_s.tolist():
+            for feat_idx in feat_ids.tolist():
                 y, x = self.coords[feat_idx]
                 imgs[:, 0, y, x] = sub[:, feat_idx].float() / 255.0
             
@@ -287,10 +397,15 @@ class LearnSPN:
 
             labels = kmeans.fit_predict(embeddings)
         else:
-            sub = data.index_select(0, T_s).index_select(1, V_s).float()
+            sub = data.index_select(0, instance_ids).index_select(1, feat_ids).float()
             labels = kmeans.fit_predict(sub)
+        
+        clusters: List[LongTensor] = []
+        for c in range(n_clusters):
+            mask = (labels == c)
+            clusters.append(instance_ids[mask])
 
-        return T_s[labels == 0], T_s[labels == 1]
+        return clusters
 
     def _make_leaf_layer_estimated(
         self,
@@ -325,22 +440,24 @@ class LearnSPN:
 
     def _make_sum_layer_estimated(
         self,
-        T1: Tensor,
-        T2: Tensor,
+        clusters: List[LongTensor],
         num_input_units: int,
         num_sum_units: int,
         activation: str
     ):
-        w1 = T1.numel() / float(T1.numel() + T2.numel())
-        w2 = 1.0 - w1
-        mix_weights = np.array([w1, w2], dtype=float)
+        arity = len(clusters)
+        cluster_sizes = [int(c.numel()) for c in clusters]
+        smoothed = [sz + self.alpha for sz in cluster_sizes]
+        total = float(sum(smoothed))
+        weights = [sz / total for sz in smoothed]
+        mix_weights = np.array(weights, dtype=float)
         
         if num_input_units == 1:
-            logits = np.log(mix_weights).reshape(1, 2)
+            logits = np.log(mix_weights).reshape(1, arity)
         else:
-            rep_weights = np.tile(mix_weights.reshape(1, 2), (num_sum_units, 1))
-            rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, 2, 1), (1, 1, num_input_units))
-            rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, 2 * num_input_units)
+            rep_weights = np.tile(mix_weights.reshape(1, arity), (num_sum_units, 1))
+            rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, arity, 1), (1, 1, num_input_units))
+            rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, arity * num_input_units)
             
             logits = np.log(rep_weights_flat)
             if self.jitter_scale and self.jitter_scale > 0.0:
@@ -348,7 +465,7 @@ class LearnSPN:
 
         tp = TensorParameter(
             num_sum_units,
-            2 * num_input_units,
+            arity * num_input_units,
             initializer=ConstantTensorInitializer(logits),
             learnable=True
         )
@@ -356,11 +473,11 @@ class LearnSPN:
         unary_op_factory = name_to_parameter_activation(activation)
         
         param = Parameter.from_unary(
-            unary_op_factory((num_sum_units, 2 * num_input_units)),
+            unary_op_factory((num_sum_units, arity * num_input_units)),
             tp
         )
 
-        return SumLayer(num_input_units=num_input_units, num_output_units=num_sum_units, arity=2, weight=param)
+        return SumLayer(num_input_units=num_input_units, num_output_units=num_sum_units, arity=arity, weight=param)
 
 
 def _pairwise_mutual_info(x1: LongTensor, x2: LongTensor, alpha: float, num_categories: int) -> Tensor:
