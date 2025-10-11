@@ -268,7 +268,7 @@ class LearnSPN:
     
                 feat_ids = torch.tensor(list(node.scope), dtype=torch.long, device=data.device)
                 
-                clusters = self._cluster_instances(data, feat_ids, rows_idx, arity)
+                clusters = self._cluster_instances(feat_ids, rows_idx, data, arity)
                 if parent_layer is None:
                     layer = self._make_sum_layer_estimated(
                         clusters=clusters,
