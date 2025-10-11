@@ -159,7 +159,7 @@ class LearnSPN:
                     root.append(layer)
             else:
                 if parent is not None:
-                    layer = SumLayer(num_input_units=parent.num_input_units, num_output_units=num_sum_units, arity=2, weight_factory=sum_weight_factory)
+                    layer = SumLayer(num_input_units=num_input_units, num_output_units=num_sum_units, arity=2, weight_factory=sum_weight_factory)
                 else:
                     layer = SumLayer(num_input_units=num_sum_units, num_output_units=1, arity=2, weight_factory=sum_weight_factory)
                     root.append(layer)
@@ -168,8 +168,8 @@ class LearnSPN:
             if parent is not None:
                 in_layers.setdefault(parent, []).append(layer)
 
-            stack.append(Task(instance_ids, clusters[1], layer))
-            stack.append(Task(instance_ids, clusters[0], layer))
+            stack.append(Task(feat_ids, clusters[1], layer))
+            stack.append(Task(feat_ids, clusters[0], layer))
 
         stack = [Task(torch.arange(D, device=self.device), torch.arange(N, device=self.device), None)]
 
