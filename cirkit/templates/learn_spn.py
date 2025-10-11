@@ -35,12 +35,12 @@ class LearnSPN:
     def __init__(
         self,
         alpha: float = 0.5,
-        min_instances: int = 500,
-        mi_quantile: float = 0.5,
+        min_instances: int = 1000,
+        mi_quantile: float = 0.6,
         local_radius: int = 4,
         image_shape: Tuple[int, int] = (1, 28, 28),
         seed: Optional[int] = 42,
-        jitter_scale: float = 1e-2,
+        jitter_scale: float = 1e-1,
         use_miwae: bool = False,
         weight_dir: str = None,
         device: Optional[torch.device] = None
