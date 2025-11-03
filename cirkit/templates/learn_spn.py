@@ -24,6 +24,7 @@ from cirkit.templates.utils import (
 from cirkit.templates.region_graph.algorithms import QuadGraph
 from cirkit.templates.region_graph import RegionNode, PartitionNode, RegionGraphNode
 from cirkit.utils.scope import Scope
+from cirkit.templates.region_graph.algorithms.chow_liu import _categorical_mutual_info
 
 @dataclass
 class Task:
@@ -38,34 +39,41 @@ class LearnSPN:
         min_instances: int = 1000,
         mi_quantile: float = 0.6,
         local_radius: int = 4,
-        image_shape: Tuple[int, int] = (1, 28, 28),
+        data_shape: Tuple[int, int] = (1, 28, 28),
         seed: Optional[int] = 42,
         jitter_scale: float = 1e-1,
         use_miwae: bool = False,
         weight_dir: str = None,
-        device: Optional[torch.device] = None
+        device: Optional[torch.device] = None,
+        data_format: str = None
     ):
-        if seed is not None:
-            self._set_seed(seed)
-
+        
+        assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
+    
         self.alpha = alpha
         self.min_instances = min_instances
         self.mi_quantile = mi_quantile
         self.local_radius = local_radius
-        assert len(image_shape) == 3, "image_shape should be (C, H, W)"
-        self.image_shape = image_shape
+        self.jitter_scale = jitter_scale
+        self.data_shape = data_shape
+        self.use_miwae = use_miwae
+        self.data_format = data_format
 
         self.device = device if device is not None else (torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
-        self.jitter_scale = jitter_scale
-        self.use_miwae = use_miwae
+        if seed is not None:
+            self._set_seed(seed)
 
-        if use_miwae:
-            self.miwae = ConvVAE(input_channel=1, latent_dim=50).to(self.device)
-            if weight_dir is not None:
-                self.miwae.load_state_dict(torch.load(weight_dir, map_location=self.device))
+        if data_format == 'image':
+            assert len(data_shape) == 3, "data_shape should be (C, H, W)"
+            self._build_neighbor_map()
+
+            if use_miwae:
+                self.miwae = ConvVAE(input_channel=1, latent_dim=50).to(self.device)
+                if weight_dir is not None:
+                    self.miwae.load_state_dict(torch.load(weight_dir, map_location=self.device))
         
-        self._build_neighbor_map()
+
 
     def _set_seed(self, seed: int):
         torch.manual_seed(seed)
@@ -76,7 +84,7 @@ class LearnSPN:
         torch.backends.cudnn.benchmark = False
 
     def _build_neighbor_map(self):
-        _, H, W = self.image_shape
+        _, H, W = self.data_shape
         n = H * W
         self.coords = {i: (i // W, i % W) for i in range(n)}
         self.neighbor_map: Dict[int, List[int]] = defaultdict(list)
@@ -133,7 +141,16 @@ class LearnSPN:
         def _handle_small_instances(feat_ids: LongTensor, instance_ids: LongTensor, parent):
             if use_estimated:
                 feats = [
-                    self._make_leaf_layer_estimated(int(f), instance_ids, data, num_input_units, num_categories, activation, input_factory)
+                    self._make_leaf_layer_estimated(
+                        int(f),
+                        instance_ids,
+                        data, 
+                        num_input_units, 
+                        num_categories, 
+                        activation, 
+                        input_factory
+                        )
+                        
                     for f in feat_ids.tolist()
                 ]
             else:
@@ -159,9 +176,17 @@ class LearnSPN:
                     root.append(layer)
             else:
                 if parent is not None:
-                    layer = SumLayer(num_input_units=num_input_units, num_output_units=num_sum_units, arity=2, weight_factory=sum_weight_factory)
+                    layer = SumLayer(
+                        num_input_units=num_input_units, 
+                        num_output_units=num_sum_units, 
+                        arity=2, 
+                        weight_factory=sum_weight_factory)
                 else:
-                    layer = SumLayer(num_input_units=num_sum_units, num_output_units=1, arity=2, weight_factory=sum_weight_factory)
+                    layer = SumLayer(
+                        num_input_units=num_sum_units, 
+                        num_output_units=1, 
+                        arity=2, 
+                        weight_factory=sum_weight_factory)
                     root.append(layer)
 
             layers.append(layer)
@@ -208,12 +233,14 @@ class LearnSPN:
         num_input_units: int = 1,
         num_sum_units: int = 1
     ) -> Circuit:
+        
+        assert self.data_format == 'image', "quad_spn only supports image data_format"
 
         layers: List[Layer] = []
         in_layers: Dict[Layer, List[Layer]] = {}
         node_to_layer: Dict[RegionGraphNode, Layer] = {}
     
-        qg = QuadGraph(self.image_shape)
+        qg = QuadGraph(self.data_shape)
         num_categories = int(data.max().item() + 1)
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
     
@@ -316,33 +343,36 @@ class LearnSPN:
         sub = data.index_select(0, instance_ids).index_select(1, feat_ids)
         n = feat_ids.numel()
 
-        idx_map = {int(v): i for i, v in enumerate(feat_ids.tolist())}
+        if self.data_format == 'image':
+            idx_map = {int(v): i for i, v in enumerate(feat_ids.tolist())}
 
-        pairs = []
-        for i, feat_i in enumerate(feat_ids.tolist()):
-            for feat_j in self.neighbor_map[int(feat_i)]:
-                if feat_j in idx_map:
-                    j = idx_map[feat_j]
-                    if j > i:
-                        pairs.append((i, j))
+            pairs = []
+            for i, feat_i in enumerate(feat_ids.tolist()):
+                for feat_j in self.neighbor_map[int(feat_i)]:
+                    if feat_j in idx_map:
+                        j = idx_map[feat_j]
+                        if j > i:
+                            pairs.append((i, j))
 
-        if not pairs:
-            return feat_ids, torch.empty(0, dtype=torch.long, device=data.device)
+            if not pairs:
+                return feat_ids, torch.empty(0, dtype=torch.long, device=data.device)
 
-        idx_i = torch.tensor([p[0] for p in pairs], device=sub.device)
-        idx_j = torch.tensor([p[1] for p in pairs], device=sub.device)
+            idx_i = torch.tensor([p[0] for p in pairs], device=sub.device)
+            idx_j = torch.tensor([p[1] for p in pairs], device=sub.device)
 
-        mi_mat = torch.zeros((n, n), device=sub.device)
+            mi_mat = torch.zeros((n, n), device=sub.device)
 
-        for start in range(0, len(idx_i), chunk_size):
-            end = start + chunk_size
-            i_chunk = idx_i[start:end]
-            j_chunk = idx_j[start:end]
+            for start in range(0, len(idx_i), chunk_size):
+                end = start + chunk_size
+                i_chunk = idx_i[start:end]
+                j_chunk = idx_j[start:end]
 
-            mi_vals = _pairwise_mutual_info(sub[:, i_chunk], sub[:, j_chunk], self.alpha, num_categories)
+                mi_vals = _pairwise_mutual_info(sub[:, i_chunk], sub[:, j_chunk], self.alpha, num_categories)
 
-            mi_mat[i_chunk, j_chunk] = mi_vals
-            mi_mat[j_chunk, i_chunk] = mi_vals
+                mi_mat[i_chunk, j_chunk] = mi_vals
+                mi_mat[j_chunk, i_chunk] = mi_vals
+        else:
+            mi_mat = _categorical_mutual_info(sub, alpha=self.alpha, num_categories=num_categories)
 
         triu = mi_mat.triu(diagonal=1)
         vals = triu.flatten()[triu.flatten() > 0]
@@ -382,7 +412,7 @@ class LearnSPN:
                         )
         
         if self.use_miwae:
-            C, H, W = self.image_shape
+            C, H, W = self.data_shape
             N = instance_ids.numel()
             sub = data.index_select(0, instance_ids)
             imgs = torch.zeros((N, C, H, W), device=self.device, dtype=torch.float32)
