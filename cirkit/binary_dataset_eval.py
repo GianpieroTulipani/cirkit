@@ -131,7 +131,7 @@ if __name__ == "__main__":
     )
 
     symbolic_circuit = learner.learn_spn(
-        train_data,
+        train_data.dataset[train_data.indices],
         input_layer='catergorical',
         activation='softmax',
         initialization='estimated',
