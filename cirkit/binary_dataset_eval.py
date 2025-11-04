@@ -68,7 +68,7 @@ def train_circuit(
         for batch in tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False):
             batch = batch.to(device)
             log_liks = circuit(batch)
-            loss = log_liks.mean()
+            loss = -log_liks.mean()
 
             optimizer.zero_grad()
             loss.backward()
@@ -88,7 +88,7 @@ def train_circuit(
             for batch in tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False):
                 batch = batch.to(device)
                 log_liks = circuit(batch)
-                loss = log_liks.mean()
+                loss = -log_liks.mean()
                 val_loss_sum += loss.item() * batch.size(0)
                 val_count += batch.size(0)
         avg_val_nll = val_loss_sum / val_count
@@ -120,7 +120,7 @@ def evaluate_circuit(circuit,
         for batch in tqdm(test_loader, desc="[Test]", leave=False):
             batch = batch.to(device)
             log_liks = circuit(batch)
-            loss = log_liks.mean()
+            loss = -log_liks.mean()
             test_nll_sum += loss.item() * batch.size(0)
             test_count += batch.size(0)
 
