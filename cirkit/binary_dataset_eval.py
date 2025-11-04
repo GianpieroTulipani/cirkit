@@ -174,6 +174,11 @@ if __name__ == "__main__":
         jitter_scale = 1e-1
 
     try:
+        weight_decay = float(input("Enter the weight decay (default=1e-6): ") or 1e-6)
+    except ValueError:
+        weight_decay = 1e-6
+
+    try:
         initialization = str(input("Enter intialization value (default='estimated'): ") or 'estimated')
     except ValueError:
         initialization = 'estimated'
@@ -237,7 +242,7 @@ if __name__ == "__main__":
         val_loader,
         num_epochs=10,
         lr=1e-2,
-        weight_decay=1e-6,
+        weight_decay=weight_decay,
         device=device
     )
 
