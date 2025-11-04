@@ -231,7 +231,7 @@ if __name__ == "__main__":
         val_loader,
         num_epochs=10,
         lr=1e-2,
-        weight_decay=0.0,
+        weight_decay=1e-6,
         device=device
     )
 
