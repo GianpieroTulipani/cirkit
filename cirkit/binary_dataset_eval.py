@@ -186,9 +186,9 @@ if __name__ == "__main__":
     print("Learning PCs structure...")
 
     learner = LearnSPN(
-        alpha=0.05,
-        min_instances=100,
-        mi_quantile=0.5,
+        alpha=alpha,
+        min_instances=min_instances,
+        mi_quantile=mi_quantile,
         device=device,
         data_format='tabular'
     )
@@ -207,7 +207,7 @@ if __name__ == "__main__":
     torch.cuda.empty_cache()
     gc.collect()
 
-    ctx = PipelineContext(
+    """ctx = PipelineContext(
         backend='torch',
         semiring='lse-sum',
         fold=True,
@@ -221,7 +221,7 @@ if __name__ == "__main__":
         train_data,
         test_data,
         device=device
-    )
+    )"""
 
     print("Training the circuit...")
 
