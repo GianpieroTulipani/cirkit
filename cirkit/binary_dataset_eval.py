@@ -178,14 +178,13 @@ if __name__ == "__main__":
         data_format='tabular'
     )
 
-
     symbolic_circuit = learner.learn_spn(
         train_data.dataset[train_data.indices],
         input_layer='categorical',
         activation='softmax',
         initialization=initialization,
-        num_input_units=1,
-        num_sum_units=1
+        num_input_units=num_input_units,
+        num_sum_units=num_sum_units
     )
 
     print(f'The Circuit have {len(list(symbolic_circuit.layers))} layers')
