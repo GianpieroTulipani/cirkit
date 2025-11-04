@@ -154,6 +154,21 @@ if __name__ == "__main__":
     print("🧮 Please provide SPN learning hyperparameters (press Enter for defaults):")
 
     try:
+        alpha = float(input("Enter α (Laplace smoothing, default=0.5): ") or 0.5)
+    except ValueError:
+        alpha = 0.5
+
+    try:
+        min_instances = int(input("Enter minimum instances per region (default=100): ") or 100)
+    except ValueError:
+        min_instances = 100
+
+    try:
+        mi_quantile = float(input("Enter MI quantile threshold (default=0.5): ") or 0.5)
+    except ValueError:
+        mi_quantile = 0.5
+
+    try:
         initialization = str(input("Enter intialization value (default='estimated'): ") or 'estimated')
     except ValueError:
         initialization = 'estimated'
@@ -228,3 +243,6 @@ if __name__ == "__main__":
         device=device,
         checkpoint_path='best_circuit.pth'
         )
+    
+    #Test NLL: 24.2683 estimated
+    #Test NLL: 33.5846 normal
