@@ -151,15 +151,35 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_data, shuffle=True, batch_size=batch_size)
     test_loader  = DataLoader(test_data, shuffle=False, batch_size=batch_size)
 
+    print("🧮 Please provide SPN learning hyperparameters (press Enter for defaults):")
+
+    try:
+        alpha = float(input("Enter α (Laplace smoothing, default=0.5): ") or 0.5)
+    except ValueError:
+        alpha = 0.5
+
+    try:
+        min_instances = int(input("Enter minimum instances per region (default=100): ") or 100)
+    except ValueError:
+        min_instances = 100
+
+    try:
+        mi_quantile = float(input("Enter MI quantile threshold (default=0.5): ") or 0.5)
+    except ValueError:
+        mi_quantile = 0.5
+
+    print(f"\n✅ Using parameters: α={alpha}, min_instances={min_instances}, mi_quantile={mi_quantile}\n")
+
     print("Learning PCs structure...")
 
     learner = LearnSPN(
-        alpha=0.5,
-        min_instances=100,
-        mi_quantile=0.5,
+        alpha=alpha,
+        min_instances=min_instances,
+        mi_quantile=mi_quantile,
         device=device,
         data_format='tabular'
     )
+
 
     symbolic_circuit = learner.learn_spn(
         train_data.dataset[train_data.indices],
