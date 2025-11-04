@@ -105,7 +105,7 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dataset = openml.datasets.get_dataset(40668, download_all_files=True).get_data()[0]
     dataset = pd.get_dummies(dataset)
-    tensor_dataset = torch.tensor(dataset.values, dtype=torch.float32)
+    tensor_dataset = torch.tensor(dataset.values, dtype=torch.long)
 
     n_total = len(tensor_dataset)
     n_train = 16000
