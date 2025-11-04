@@ -8,6 +8,35 @@ from torch.utils.data import DataLoader
 from cirkit.pipeline import PipelineContext
 from cirkit.templates.learn_spn import LearnSPN
 
+def compute_circuit_likelihood(circuit, train_data, test_data, batch_size=512, device='cpu'):
+    device = torch.device(device)
+    circuit.to(device)
+    circuit.eval()
+
+    def compute_log_likelihood(circuit, dataset):
+        data_loader = DataLoader(dataset, batch_size=batch_size)
+        log_likelihoods = []
+        with torch.no_grad():
+            for batch in data_loader:
+                # Handle whether batch is a tuple (from TensorDataset) or raw Tensor
+                if isinstance(batch, (list, tuple)):
+                    batch = batch[0]
+                batch = batch.to(device)
+                ll = circuit(batch).cpu()
+                log_likelihoods.append(ll)
+        return torch.cat(log_likelihoods).mean().item()
+
+    print("Computing train log-likelihood in batches ...")
+    train_ll = compute_log_likelihood(circuit, train_data)
+
+    print("Computing test log-likelihood in batches ...")
+    test_ll = compute_log_likelihood(circuit, test_data)
+
+    print(f"Avg. log-likelihoods:\n"
+          f"  Train: {train_ll:.4f}\n"
+          f"  Test:  {test_ll:.4f}")
+
+
 def train_circuit(
     symbolic_circuit,
     train_loader: DataLoader,
@@ -122,6 +151,8 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_data, shuffle=True, batch_size=batch_size)
     test_loader  = DataLoader(test_data, shuffle=False, batch_size=batch_size)
 
+    print("Learning PCs structure...")
+
     learner = LearnSPN(
         alpha=0.5,
         min_instances=100,
@@ -139,8 +170,28 @@ if __name__ == "__main__":
         num_sum_units=1
     )
 
+    print(f'The Circuit have {len(list(symbolic_circuit.layers))} layers')
+
     torch.cuda.empty_cache()
     gc.collect()
+
+    ctx = PipelineContext(
+        backend='torch',
+        semiring='lse-sum',
+        fold=True,
+        optimize=True
+    )
+
+    circuit = ctx.compile(symbolic_circuit).to(device)
+
+    compute_circuit_likelihood(
+        circuit,
+        train_data,
+        test_data,
+        device=device
+    )
+
+    """print("Training the circuit...")
 
     circuit = train_circuit(
         symbolic_circuit,
@@ -152,9 +203,11 @@ if __name__ == "__main__":
         device=device
     )
 
+    print("Evaluating on test set...")
+
     evaluate_circuit(
         circuit,
         test_loader,
         device=device,
         checkpoint_path='best_circuit.pth'
-        )
+        )"""
