@@ -158,6 +158,16 @@ if __name__ == "__main__":
     except ValueError:
         initialization = 'estimated'
 
+    try:
+        num_input_units = int(input("Enter the number of input units (default=1): ") or 1)
+    except ValueError:
+        num_input_units = 1
+    
+    try:
+        num_sum_units = int(input("Enter the number of sum units (default=1): ") or 1)
+    except ValueError:
+        num_sum_units = 1
+
     print("Learning PCs structure...")
 
     learner = LearnSPN(
