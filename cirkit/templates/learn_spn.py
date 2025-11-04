@@ -39,7 +39,7 @@ class LearnSPN:
         min_instances: int = 1000,
         mi_quantile: float = 0.6,
         local_radius: int = 4,
-        data_shape: Tuple[int, int] = (1, 28, 28),
+        image_shape: Tuple[int, int] = (1, 28, 28),
         seed: Optional[int] = 42,
         jitter_scale: float = 1e-1,
         use_miwae: bool = False,
@@ -55,7 +55,7 @@ class LearnSPN:
         self.mi_quantile = mi_quantile
         self.local_radius = local_radius
         self.jitter_scale = jitter_scale
-        self.data_shape = data_shape
+        self.image_shape = image_shape
         self.use_miwae = use_miwae
         self.data_format = data_format
 
@@ -65,7 +65,7 @@ class LearnSPN:
             self._set_seed(seed)
 
         if data_format == 'image':
-            assert len(data_shape) == 3, "data_shape should be (C, H, W)"
+            assert len(image_shape) == 3, "image_shape should be (C, H, W)"
             self._build_neighbor_map()
 
             if use_miwae:
@@ -84,7 +84,7 @@ class LearnSPN:
         torch.backends.cudnn.benchmark = False
 
     def _build_neighbor_map(self):
-        _, H, W = self.data_shape
+        _, H, W = self.image_shape
         n = H * W
         self.coords = {i: (i // W, i % W) for i in range(n)}
         self.neighbor_map: Dict[int, List[int]] = defaultdict(list)
@@ -240,7 +240,7 @@ class LearnSPN:
         in_layers: Dict[Layer, List[Layer]] = {}
         node_to_layer: Dict[RegionGraphNode, Layer] = {}
     
-        qg = QuadGraph(self.data_shape)
+        qg = QuadGraph(self.image_shape)
         num_categories = int(data.max().item() + 1)
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
     
@@ -412,7 +412,7 @@ class LearnSPN:
                         )
         
         if self.use_miwae:
-            C, H, W = self.data_shape
+            C, H, W = self.image_shape
             N = instance_ids.numel()
             sub = data.index_select(0, instance_ids)
             imgs = torch.zeros((N, C, H, W), device=self.device, dtype=torch.float32)
