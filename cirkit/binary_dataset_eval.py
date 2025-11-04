@@ -68,7 +68,7 @@ def train_circuit(
         for batch in tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False):
             batch = batch.to(device)
             log_liks = circuit(batch)
-            loss = -log_liks.mean()
+            loss = log_liks.mean()
 
             optimizer.zero_grad()
             loss.backward()
@@ -88,7 +88,7 @@ def train_circuit(
             for batch in tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False):
                 batch = batch.to(device)
                 log_liks = circuit(batch)
-                loss = -log_liks.mean()
+                loss = log_liks.mean()
                 val_loss_sum += loss.item() * batch.size(0)
                 val_count += batch.size(0)
         avg_val_nll = val_loss_sum / val_count
@@ -120,7 +120,7 @@ def evaluate_circuit(circuit,
         for batch in tqdm(test_loader, desc="[Test]", leave=False):
             batch = batch.to(device)
             log_liks = circuit(batch)
-            loss = -log_liks.mean()
+            loss = log_liks.mean()
             test_nll_sum += loss.item() * batch.size(0)
             test_count += batch.size(0)
 
@@ -169,6 +169,11 @@ if __name__ == "__main__":
         mi_quantile = 0.5
 
     try:
+        jitter_scale = float(input("Enter the jitter scale (default=1e-1): ") or 1e-1)
+    except ValueError:
+        jitter_scale = 1e-1
+
+    try:
         initialization = str(input("Enter intialization value (default='estimated'): ") or 'estimated')
     except ValueError:
         initialization = 'estimated'
@@ -189,6 +194,7 @@ if __name__ == "__main__":
         alpha=alpha,
         min_instances=min_instances,
         mi_quantile=mi_quantile,
+        jitter_scale=jitter_scale,
         device=device,
         data_format='tabular'
     )
