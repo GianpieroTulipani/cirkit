@@ -47,7 +47,7 @@ def train_circuit(
     device: str = 'cpu',
     save_path: str = "best_circuit.pth"
 ):
-    device=torch.device(device)
+    device = torch.device(device)
     ctx = PipelineContext(
         backend='torch',
         semiring='lse-sum',
@@ -62,8 +62,7 @@ def train_circuit(
 
     for epoch in range(1, num_epochs + 1):
         circuit.train()
-        train_loss_sum = 0.0
-        train_count = 0
+        train_log_liks = []
 
         for batch in tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False):
             batch = batch.to(device)
@@ -74,59 +73,75 @@ def train_circuit(
             loss.backward()
             optimizer.step()
 
-            train_loss_sum += loss.item() * batch.size(0)
-            train_count += batch.size(0)
-            
-        avg_train_nll = train_loss_sum / train_count
+            train_log_liks.append(log_liks.detach())
 
-        print(f"epoch {epoch} - Train NLL: {avg_train_nll:.4f}")
+        train_log_liks = torch.cat(train_log_liks)
+        avg_train_log_ll = train_log_liks.mean().item()
+        avg_train_nll = -avg_train_log_ll
+        avg_train_ll = torch.exp(train_log_liks).mean().item()
+
+        print(f"Epoch {epoch} - Train NLL: {avg_train_nll:.4f} | "
+              f"Log-LL: {avg_train_log_ll:.4f} | Likelihood: {avg_train_ll:.6e}")
 
         circuit.eval()
-        val_loss_sum = 0.0
-        val_count = 0
+        val_log_liks = []
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False):
                 batch = batch.to(device)
                 log_liks = circuit(batch)
-                loss = -log_liks.mean()
-                val_loss_sum += loss.item() * batch.size(0)
-                val_count += batch.size(0)
-        avg_val_nll = val_loss_sum / val_count
+                val_log_liks.append(log_liks)
 
-        print(f"Epoch {epoch} - Val NLL: {avg_val_nll:.4f}")
+        val_log_liks = torch.cat(val_log_liks)
+        avg_val_log_ll = val_log_liks.mean().item()
+        avg_val_nll = -avg_val_log_ll
+        avg_val_ll = torch.exp(val_log_liks).mean().item()
+
+        print(f"Epoch {epoch} - Val NLL: {avg_val_nll:.4f} | "
+              f"Log-LL: {avg_val_log_ll:.4f} | Likelihood: {avg_val_ll:.6e}")
 
         if avg_val_nll < best_val_nll:
             best_val_nll = avg_val_nll
             torch.save(circuit.state_dict(), save_path)
             print(f"✅ New best model at epoch {epoch}, Val NLL: {best_val_nll:.4f}")
-            
+
     return circuit
 
-def evaluate_circuit(circuit,
-                     test_loader: DataLoader,
-                     device: str = "cpu",
-                     checkpoint_path: str = "best_circuit.pth"
-                    ):
-    
+
+def evaluate_circuit(
+    circuit,
+    test_loader: DataLoader,
+    device: str = "cpu",
+    checkpoint_path: str = "best_circuit.pth"
+):
     device = torch.device(device)
     circuit.load_state_dict(torch.load(checkpoint_path, map_location=device))
     circuit.to(device)
     circuit.eval()
 
-    test_nll_sum = 0.0
-    test_count = 0
+    test_log_liks = []
 
     with torch.no_grad():
-        for batch in tqdm(test_loader, desc="[Test]", leave=False):
+        for batch in tqdm(test_loader, desc="[Test Evaluation]", leave=False):
             batch = batch.to(device)
             log_liks = circuit(batch)
-            loss = -log_liks.mean()
-            test_nll_sum += loss.item() * batch.size(0)
-            test_count += batch.size(0)
+            test_log_liks.append(log_liks)
 
-    avg_test_nll = test_nll_sum / test_count
-    print(f"Test NLL: {avg_test_nll:.4f}")
-    return avg_test_nll
+    test_log_liks = torch.cat(test_log_liks)
+    avg_log_likelihood = test_log_liks.mean().item()
+    avg_nll = -avg_log_likelihood
+    avg_likelihood = torch.exp(test_log_liks).mean().item()
+
+    print(f"📊 Test Results:\n"
+          f"  Log-Likelihood: {avg_log_likelihood:.4f}\n"
+          f"  Negative Log-Likelihood: {avg_nll:.4f}\n"
+          f"  Likelihood: {avg_likelihood:.6e}")
+
+    return {
+        "avg_log_likelihood": avg_log_likelihood,
+        "avg_likelihood": avg_likelihood,
+        "avg_nll": avg_nll
+    }
+
     
 if __name__ == "__main__":
     batch_size = 64
@@ -255,5 +270,53 @@ if __name__ == "__main__":
         checkpoint_path='best_circuit.pth'
         )
     
-    #Test NLL: 24.2683 estimated
-    #Test NLL: 33.5846 normal
+
+"""
+Enter α (Laplace smoothing, default=0.5): 50.0
+Enter minimum instances per region (default=100): 200
+Enter MI quantile threshold (default=0.5): 0.6
+Enter the jitter scale (default=1e-1): 5e-1
+Enter the weight decay (default=1e-6): 0.0
+Enter intialization value (default='estimated'): estimated
+Enter the number of input units (default=1): 4
+Enter the number of sum units (default=1): 4
+Learning PCs structure...
+The Circuit have 9550 layers
+Training the circuit...
+epoch 1 - Train NLL: 26.2422
+Epoch 1 - Val NLL: 22.5393
+✅ New best model at epoch 1, Val NLL: 22.5393
+epoch 2 - Train NLL: 21.0519
+Epoch 2 - Val NLL: 20.3991
+✅ New best model at epoch 2, Val NLL: 20.3991
+epoch 3 - Train NLL: 19.6565
+Epoch 3 - Val NLL: 19.6223
+✅ New best model at epoch 3, Val NLL: 19.6223
+epoch 4 - Train NLL: 19.0488
+Epoch 4 - Val NLL: 19.2410
+✅ New best model at epoch 4, Val NLL: 19.2410
+epoch 5 - Train NLL: 18.7073
+Epoch 5 - Val NLL: 19.0098
+✅ New best model at epoch 5, Val NLL: 19.0098
+epoch 6 - Train NLL: 18.4874
+Epoch 6 - Val NLL: 18.8496
+✅ New best model at epoch 6, Val NLL: 18.8496
+epoch 7 - Train NLL: 18.3346
+Epoch 7 - Val NLL: 18.7352
+✅ New best model at epoch 7, Val NLL: 18.7352
+epoch 8 - Train NLL: 18.2279
+Epoch 8 - Val NLL: 18.6708
+✅ New best model at epoch 8, Val NLL: 18.6708
+epoch 9 - Train NLL: 18.1473
+Epoch 9 - Val NLL: 18.6143
+✅ New best model at epoch 9, Val NLL: 18.6143
+epoch 10 - Train NLL: 18.0768
+Epoch 10 - Val NLL: 18.5568
+✅ New best model at epoch 10, Val NLL: 18.5568
+Evaluating on test set...
+Test NLL: 18.5184
+
+Test NLL: 16.7325 with 16 units
+Test NLL: 16.4114 with 32 units
+Test NLL: 20.4713 normal with 32 units
+"""
