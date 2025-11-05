@@ -78,10 +78,9 @@ def train_circuit(
         train_log_liks = torch.cat(train_log_liks)
         avg_train_log_ll = train_log_liks.mean().item()
         avg_train_nll = -avg_train_log_ll
-        avg_train_ll = torch.exp(train_log_liks).mean().item()
 
         print(f"Epoch {epoch} - Train NLL: {avg_train_nll:.4f} | "
-              f"Log-LL: {avg_train_log_ll:.4f} | Likelihood: {avg_train_ll:.6e}")
+              f"Log-LL: {avg_train_log_ll:.4f}")
 
         circuit.eval()
         val_log_liks = []
@@ -129,16 +128,13 @@ def evaluate_circuit(
     test_log_liks = torch.cat(test_log_liks)
     avg_log_likelihood = test_log_liks.mean().item()
     avg_nll = -avg_log_likelihood
-    avg_likelihood = torch.exp(test_log_liks).mean().item()
 
     print(f"📊 Test Results:\n"
           f"  Log-Likelihood: {avg_log_likelihood:.4f}\n"
-          f"  Negative Log-Likelihood: {avg_nll:.4f}\n"
-          f"  Likelihood: {avg_likelihood:.6e}")
+          f"  Negative Log-Likelihood: {avg_nll:.4f}\n")
 
     return {
         "avg_log_likelihood": avg_log_likelihood,
-        "avg_likelihood": avg_likelihood,
         "avg_nll": avg_nll
     }
 
