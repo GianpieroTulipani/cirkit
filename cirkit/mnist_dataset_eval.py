@@ -194,6 +194,7 @@ if __name__ == "__main__":
             data_format="image",
             image_shape=tuple(params["image_shape"]),
             device=device,
+            weight_dir=r"cirkit\best_categorical_miwae.pt"
         )
         symbolic_circuit = spn_learner.learn_spn(
             data=train_data.dataset,
@@ -213,6 +214,7 @@ if __name__ == "__main__":
             data_format="image",
             image_shape=tuple(params["image_shape"]),
             device=device
+            weight_dir=r"cirkit\best_categorical_miwae.pt"
         )
         symbolic_circuit = spn_learner.quad_spn(
             train_data.dataset,
