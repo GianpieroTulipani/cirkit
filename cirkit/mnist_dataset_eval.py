@@ -19,7 +19,7 @@ def set_nested_key(d, key_path, value):
     keys = key_path.split('.')
     sub_dict = d
     for k in keys[:-1]:
-        if k not in sub_dict:
+        if k not in sub_dict or not isinstance(sub_dict[k], dict):
             sub_dict[k] = {}
         sub_dict = sub_dict[k]
 
@@ -34,7 +34,9 @@ def set_nested_key(d, key_path, value):
                     value = int(value)
             except ValueError:
                 pass
+
     sub_dict[keys[-1]] = value
+
 
 
 def train_circuit(
