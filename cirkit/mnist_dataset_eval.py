@@ -182,7 +182,7 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_data, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
     test_loader = DataLoader(X_test, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
 
-    weight_dir = os.path.join(os.getcwd(), "cirkit", "best_categorical_miwae.pt")
+    weight_dir = os.path.join(os.getcwd(), "best_categorical_miwae.pt")
 
     mode = cfg["mode"].lower()
     if mode == "learn_spn":
