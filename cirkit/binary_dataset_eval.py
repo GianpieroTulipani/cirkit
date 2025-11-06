@@ -9,12 +9,9 @@ from tqdm import tqdm
 from cirkit.pipeline import PipelineContext
 from cirkit.templates.learn_spn import LearnSPN
 from cirkit.templates.data_modalities import tabular_data
-from cirkit import utils
+from cirkit.utils import Parameterization
 
 
-# ======================================================
-# 🧩 Utility: Recursive Dict Setter for Overrides
-# ======================================================
 def set_nested_key(d, key_path, value):
     """
     Updates a nested dictionary given a dotted key path.
@@ -139,7 +136,7 @@ def build_random_binary_tree_structure(num_features, dataset, params):
         num_input_units=params["num_input_units"],
         sum_product_layer='cp',
         num_sum_units=params["num_sum_units"],
-        sum_weight_param=utils.Parameterization(
+        sum_weight_param=Parameterization(
             activation=params["sum_weight_activation"],
             initialization=params["sum_weight_init"]
         )
