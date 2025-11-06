@@ -182,6 +182,8 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_data, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
     test_loader = DataLoader(X_test, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
 
+    weight_dir = os.path.join(os.getcwd(), "cirkit", "best_categorical_miwae.pt")
+
     mode = cfg["mode"].lower()
     if mode == "learn_spn":
         params = cfg["learn_spn"]
@@ -194,7 +196,7 @@ if __name__ == "__main__":
             data_format="image",
             image_shape=tuple(params["image_shape"]),
             device=device,
-            weight_dir=r"cirkit\best_categorical_miwae.pt"
+            weight_dir=weight_dir
         )
         symbolic_circuit = spn_learner.learn_spn(
             data=train_data.dataset,
@@ -214,7 +216,7 @@ if __name__ == "__main__":
             data_format="image",
             image_shape=tuple(params["image_shape"]),
             device=device,
-            weight_dir=r"cirkit\best_categorical_miwae.pt"
+            weight_dir=weight_dir
         )
         symbolic_circuit = spn_learner.quad_spn(
             train_data.dataset,
