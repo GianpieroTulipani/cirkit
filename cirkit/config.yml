@@ -27,3 +27,9 @@ rbt:
   num_sum_units: 32
   sum_weight_activation: "softmax"
   sum_weight_init: "normal"
+
+clt:
+  num_input_units: 64
+  num_sum_units: 64
+  sum_weight_activation: softmax
+  sum_weight_init: normal
