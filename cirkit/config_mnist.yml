@@ -15,7 +15,7 @@ dataset:
 training:
   lr: 0.01
   epochs: 10
-  weight_decay: 1e-6
+  weight_decay: 0.000001
   device: "cuda"
   save_path: "best_circuit.pth"
 
