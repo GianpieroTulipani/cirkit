@@ -1,0 +1,29 @@
+mode: "learn_spn"
+
+dataset:
+  openml_id: 40668
+  batch_size: 64
+  split:
+    train: 16000
+    val: 4000
+
+training:
+  num_epochs: 10
+  lr: 0.01
+  weight_decay: 0.0
+  device: "cuda"
+
+learn_spn:
+  alpha: 50.0
+  min_instances: 200
+  mi_quantile: 0.6
+  jitter_scale: 5e-1
+  initialization: "estimated"
+  num_input_units: 1
+  num_sum_units: 1
+
+rbt:
+  num_input_units: 32
+  num_sum_units: 32
+  sum_weight_activation: "softmax"
+  sum_weight_init: "normal"
