@@ -1,60 +1,50 @@
+import yaml
+import argparse
 import pandas as pd
 import torch
 import openml
 import gc
-import numpy as np
-from tqdm import tqdm
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 from cirkit.pipeline import PipelineContext
 from cirkit.templates.learn_spn import LearnSPN
+from cirkit.templates.data_modalities import tabular_data
+from cirkit import utils
 
-def compute_circuit_likelihood(circuit, train_data, test_data, batch_size=512, device='cpu'):
+
+# ======================================================
+# 🧩 Utility: Recursive Dict Setter for Overrides
+# ======================================================
+def set_nested_key(d, key_path, value):
+    """
+    Updates a nested dictionary given a dotted key path.
+    Example:
+      set_nested_key(cfg, 'training.lr', 0.001)
+    """
+    keys = key_path.split('.')
+    sub_dict = d
+    for k in keys[:-1]:
+        if k not in sub_dict:
+            sub_dict[k] = {}
+        sub_dict = sub_dict[k]
+    # Try to cast value to numeric type if possible
+    try:
+        if '.' in str(value):
+            value = float(value)
+        else:
+            value = int(value)
+    except ValueError:
+        pass
+    sub_dict[keys[-1]] = value
+
+
+# ======================================================
+# 🧠 Core Functions
+# ======================================================
+def train_circuit(symbolic_circuit, train_loader, val_loader, num_epochs=10, lr=1e-2,
+                  weight_decay=0.0, device='cpu', save_path="best_circuit.pth"):
     device = torch.device(device)
-    circuit.to(device)
-    circuit.eval()
-
-    def compute_log_likelihood(circuit, dataset):
-        data_loader = DataLoader(dataset, batch_size=batch_size)
-        log_likelihoods = []
-        with torch.no_grad():
-            for batch in data_loader:
-                # Handle whether batch is a tuple (from TensorDataset) or raw Tensor
-                if isinstance(batch, (list, tuple)):
-                    batch = batch[0]
-                batch = batch.to(device)
-                ll = circuit(batch).cpu()
-                log_likelihoods.append(ll)
-        return torch.cat(log_likelihoods).mean().item()
-
-    print("Computing train log-likelihood in batches ...")
-    train_ll = compute_log_likelihood(circuit, train_data)
-
-    print("Computing test log-likelihood in batches ...")
-    test_ll = compute_log_likelihood(circuit, test_data)
-
-    print(f"Avg. log-likelihoods:\n"
-          f"  Train: {train_ll:.4f}\n"
-          f"  Test:  {test_ll:.4f}")
-
-
-def train_circuit(
-    symbolic_circuit,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    num_epochs: int = 10,
-    lr: float = 1e-2,
-    weight_decay: float = 0.0,
-    device: str = 'cpu',
-    save_path: str = "best_circuit.pth"
-):
-    device = torch.device(device)
-    ctx = PipelineContext(
-        backend='torch',
-        semiring='lse-sum',
-        fold=True,
-        optimize=True
-    )
-
+    ctx = PipelineContext(backend='torch', semiring='lse-sum', fold=True, optimize=True)
     circuit = ctx.compile(symbolic_circuit).to(device)
     optimizer = torch.optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -72,31 +62,22 @@ def train_circuit(
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
             train_log_liks.append(log_liks.detach())
 
-        train_log_liks = torch.cat(train_log_liks)
-        avg_train_log_ll = train_log_liks.mean().item()
+        avg_train_log_ll = torch.cat(train_log_liks).mean().item()
         avg_train_nll = -avg_train_log_ll
-
-        print(f"Epoch {epoch} - Train NLL: {avg_train_nll:.4f} | "
-              f"Log-LL: {avg_train_log_ll:.4f}")
+        print(f"Epoch {epoch} - Train NLL: {avg_train_nll:.4f}")
 
         circuit.eval()
         val_log_liks = []
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False):
                 batch = batch.to(device)
-                log_liks = circuit(batch)
-                val_log_liks.append(log_liks)
+                val_log_liks.append(circuit(batch))
 
-        val_log_liks = torch.cat(val_log_liks)
-        avg_val_log_ll = val_log_liks.mean().item()
+        avg_val_log_ll = torch.cat(val_log_liks).mean().item()
         avg_val_nll = -avg_val_log_ll
-        avg_val_ll = torch.exp(val_log_liks).mean().item()
-
-        print(f"Epoch {epoch} - Val NLL: {avg_val_nll:.4f} | "
-              f"Log-LL: {avg_val_log_ll:.4f} | Likelihood: {avg_val_ll:.6e}")
+        print(f"Epoch {epoch} - Val NLL: {avg_val_nll:.4f}")
 
         if avg_val_nll < best_val_nll:
             best_val_nll = avg_val_nll
@@ -106,51 +87,99 @@ def train_circuit(
     return circuit
 
 
-def evaluate_circuit(
-    circuit,
-    test_loader: DataLoader,
-    device: str = "cpu",
-    checkpoint_path: str = "best_circuit.pth"
-):
+def evaluate_circuit(circuit, test_loader, device="cpu", checkpoint_path="best_circuit.pth"):
     device = torch.device(device)
     circuit.load_state_dict(torch.load(checkpoint_path, map_location=device))
     circuit.to(device)
     circuit.eval()
 
     test_log_liks = []
-
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="[Test Evaluation]", leave=False):
             batch = batch.to(device)
-            log_liks = circuit(batch)
-            test_log_liks.append(log_liks)
+            test_log_liks.append(circuit(batch))
 
-    test_log_liks = torch.cat(test_log_liks)
-    avg_log_likelihood = test_log_liks.mean().item()
+    avg_log_likelihood = torch.cat(test_log_liks).mean().item()
     avg_nll = -avg_log_likelihood
 
     print(f"📊 Test Results:\n"
           f"  Log-Likelihood: {avg_log_likelihood:.4f}\n"
           f"  Negative Log-Likelihood: {avg_nll:.4f}\n")
 
-    return {
-        "avg_log_likelihood": avg_log_likelihood,
-        "avg_nll": avg_nll
-    }
+    return {"avg_log_likelihood": avg_log_likelihood, "avg_nll": avg_nll}
 
-    
+
+def build_spn_structure(train_data, device, params):
+    learner = LearnSPN(
+        alpha=params["alpha"],
+        min_instances=params["min_instances"],
+        mi_quantile=params["mi_quantile"],
+        jitter_scale=params["jitter_scale"],
+        device=device,
+        data_format='tabular'
+    )
+
+    return learner.learn_spn(
+        train_data.dataset[train_data.indices],
+        input_layer='categorical',
+        activation='softmax',
+        initialization=params["initialization"],
+        num_input_units=params["num_input_units"],
+        num_sum_units=params["num_sum_units"]
+    )
+
+
+def build_random_binary_tree_structure(num_features, dataset, params):
+    kwargs = int(dataset.nunique().max())
+    return tabular_data(
+        region_graph='random-binary-tree',
+        num_features=num_features,
+        kwargs=kwargs,
+        input_layer='categorical',
+        num_input_units=params["num_input_units"],
+        sum_product_layer='cp',
+        num_sum_units=params["num_sum_units"],
+        sum_weight_param=utils.Parameterization(
+            activation=params["sum_weight_activation"],
+            initialization=params["sum_weight_init"]
+        )
+    )
+
+
 if __name__ == "__main__":
-    batch_size = 64
+    parser = argparse.ArgumentParser(description="Train Probabilistic Circuit")
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to YAML config file")
+    parser.add_argument("--mode", type=str, help="Override mode: learn_spn or rbt")
+    parser.add_argument("--override", nargs="*", help="Override config values, e.g. --override training.lr=0.001 rbt.num_sum_units=64")
+    args = parser.parse_args()
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    dataset = openml.datasets.get_dataset(40668, download_all_files=True).get_data()[0]
+    # Load config
+    with open(args.config, "r") as f:
+        config = yaml.safe_load(f)
+
+    # Apply simple mode override
+    if args.mode:
+        config["mode"] = args.mode
+
+    # Apply arbitrary nested overrides
+    if args.override:
+        for override_str in args.override:
+            if "=" not in override_str:
+                raise ValueError(f"Invalid override: {override_str} (must be key=value)")
+            key, val = override_str.split("=", 1)
+            set_nested_key(config, key, val)
+
+    print("⚙️ Final Configuration:")
+    print(yaml.dump(config, sort_keys=False, default_flow_style=False))
+
+    device = torch.device(config["training"]["device"] if torch.cuda.is_available() else "cpu")
+    dataset = openml.datasets.get_dataset(config["dataset"]["openml_id"], download_all_files=True).get_data()[0]
     dataset = pd.get_dummies(dataset)
     tensor_dataset = torch.tensor(dataset.values, dtype=torch.long)
 
-    n_total = len(tensor_dataset)
-    n_train = 16000
-    n_val = 4000
-    n_test = n_total - n_train - n_val
+    n_train = config["dataset"]["split"]["train"]
+    n_val = config["dataset"]["split"]["val"]
+    n_test = len(tensor_dataset) - n_train - n_val
 
     train_data, val_data, test_data = torch.utils.data.random_split(
         tensor_dataset,
@@ -158,161 +187,33 @@ if __name__ == "__main__":
         generator=torch.Generator().manual_seed(42)
     )
 
-    train_loader = DataLoader(train_data, shuffle=True, batch_size=batch_size)
-    val_loader = DataLoader(val_data, shuffle=True, batch_size=batch_size)
-    test_loader  = DataLoader(test_data, shuffle=False, batch_size=batch_size)
+    train_loader = DataLoader(train_data, shuffle=True, batch_size=config["dataset"]["batch_size"])
+    val_loader = DataLoader(val_data, shuffle=True, batch_size=config["dataset"]["batch_size"])
+    test_loader = DataLoader(test_data, shuffle=False, batch_size=config["dataset"]["batch_size"])
 
-    print("🧮 Please provide SPN learning hyperparameters (press Enter for defaults):")
+    mode = config["mode"].lower()
+    if mode == "learn_spn":
+        print("🧠 Building LearnSPN structure...")
+        symbolic_circuit = build_spn_structure(train_data, device, config["learn_spn"])
+    elif mode in ["rbt", "random_binary_tree"]:
+        print("🌲 Building Random Binary Tree structure...")
+        symbolic_circuit = build_random_binary_tree_structure(dataset.shape[1], dataset, config["rbt"])
+    else:
+        raise ValueError("Invalid mode in config.yaml or CLI override.")
 
-    try:
-        alpha = float(input("Enter α (Laplace smoothing, default=0.5): ") or 0.5)
-    except ValueError:
-        alpha = 0.5
-
-    try:
-        min_instances = int(input("Enter minimum instances per region (default=100): ") or 100)
-    except ValueError:
-        min_instances = 100
-
-    try:
-        mi_quantile = float(input("Enter MI quantile threshold (default=0.5): ") or 0.5)
-    except ValueError:
-        mi_quantile = 0.5
-
-    try:
-        jitter_scale = float(input("Enter the jitter scale (default=1e-1): ") or 1e-1)
-    except ValueError:
-        jitter_scale = 1e-1
-
-    try:
-        weight_decay = float(input("Enter the weight decay (default=1e-6): ") or 1e-6)
-    except ValueError:
-        weight_decay = 1e-6
-
-    try:
-        initialization = str(input("Enter intialization value (default='estimated'): ") or 'estimated')
-    except ValueError:
-        initialization = 'estimated'
-
-    try:
-        num_input_units = int(input("Enter the number of input units (default=1): ") or 1)
-    except ValueError:
-        num_input_units = 1
-    
-    try:
-        num_sum_units = int(input("Enter the number of sum units (default=1): ") or 1)
-    except ValueError:
-        num_sum_units = 1
-
-    print("Learning PCs structure...")
-
-    learner = LearnSPN(
-        alpha=alpha,
-        min_instances=min_instances,
-        mi_quantile=mi_quantile,
-        jitter_scale=jitter_scale,
-        device=device,
-        data_format='tabular'
-    )
-
-    symbolic_circuit = learner.learn_spn(
-        train_data.dataset[train_data.indices],
-        input_layer='categorical',
-        activation='softmax',
-        initialization=initialization,
-        num_input_units=num_input_units,
-        num_sum_units=num_sum_units
-    )
-
-    print(f'The Circuit have {len(list(symbolic_circuit.layers))} layers')
+    print(f"✅ Circuit built with {len(list(symbolic_circuit.layers))} layers")
 
     torch.cuda.empty_cache()
     gc.collect()
-
-    """ctx = PipelineContext(
-        backend='torch',
-        semiring='lse-sum',
-        fold=True,
-        optimize=True
-    )
-
-    circuit = ctx.compile(symbolic_circuit).to(device)
-
-    compute_circuit_likelihood(
-        circuit,
-        train_data,
-        test_data,
-        device=device
-    )"""
-
-    print("Training the circuit...")
 
     circuit = train_circuit(
         symbolic_circuit,
         train_loader,
         val_loader,
-        num_epochs=10,
-        lr=1e-2,
-        weight_decay=weight_decay,
+        num_epochs=config["training"]["num_epochs"],
+        lr=config["training"]["lr"],
+        weight_decay=config["training"]["weight_decay"],
         device=device
     )
 
-    print("Evaluating on test set...")
-
-    evaluate_circuit(
-        circuit,
-        test_loader,
-        device=device,
-        checkpoint_path='best_circuit.pth'
-        )
-    
-
-"""
-Enter α (Laplace smoothing, default=0.5): 50.0
-Enter minimum instances per region (default=100): 200
-Enter MI quantile threshold (default=0.5): 0.6
-Enter the jitter scale (default=1e-1): 5e-1
-Enter the weight decay (default=1e-6): 0.0
-Enter intialization value (default='estimated'): estimated
-Enter the number of input units (default=1): 4
-Enter the number of sum units (default=1): 4
-Learning PCs structure...
-The Circuit have 9550 layers
-Training the circuit...
-epoch 1 - Train NLL: 26.2422
-Epoch 1 - Val NLL: 22.5393
-✅ New best model at epoch 1, Val NLL: 22.5393
-epoch 2 - Train NLL: 21.0519
-Epoch 2 - Val NLL: 20.3991
-✅ New best model at epoch 2, Val NLL: 20.3991
-epoch 3 - Train NLL: 19.6565
-Epoch 3 - Val NLL: 19.6223
-✅ New best model at epoch 3, Val NLL: 19.6223
-epoch 4 - Train NLL: 19.0488
-Epoch 4 - Val NLL: 19.2410
-✅ New best model at epoch 4, Val NLL: 19.2410
-epoch 5 - Train NLL: 18.7073
-Epoch 5 - Val NLL: 19.0098
-✅ New best model at epoch 5, Val NLL: 19.0098
-epoch 6 - Train NLL: 18.4874
-Epoch 6 - Val NLL: 18.8496
-✅ New best model at epoch 6, Val NLL: 18.8496
-epoch 7 - Train NLL: 18.3346
-Epoch 7 - Val NLL: 18.7352
-✅ New best model at epoch 7, Val NLL: 18.7352
-epoch 8 - Train NLL: 18.2279
-Epoch 8 - Val NLL: 18.6708
-✅ New best model at epoch 8, Val NLL: 18.6708
-epoch 9 - Train NLL: 18.1473
-Epoch 9 - Val NLL: 18.6143
-✅ New best model at epoch 9, Val NLL: 18.6143
-epoch 10 - Train NLL: 18.0768
-Epoch 10 - Val NLL: 18.5568
-✅ New best model at epoch 10, Val NLL: 18.5568
-Evaluating on test set...
-Test NLL: 18.5184
-
-Test NLL: 16.7325 with 16 units
-Test NLL: 16.4114 with 32 units
-Test NLL: 20.4713 normal with 32 units
-"""
+    evaluate_circuit(circuit, test_loader, device=device)
