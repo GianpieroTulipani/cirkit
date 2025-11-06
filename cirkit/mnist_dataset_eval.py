@@ -16,6 +16,11 @@ from cirkit.templates.learn_spn import LearnSPN
 import argparse
 
 def set_nested_key(d, key_path, value):
+    """
+    Safely updates a nested dictionary given a dotted key path.
+    Example:
+      set_nested_key(cfg, 'training.lr', 0.001)
+    """
     keys = key_path.split('.')
     sub_dict = d
     for k in keys[:-1]:
@@ -24,19 +29,19 @@ def set_nested_key(d, key_path, value):
         sub_dict = sub_dict[k]
 
     if isinstance(value, str):
-        if value.lower() in {"true", "false"}:
-            value = value.lower() == "true"
+        v = value.strip().lower()
+        if v in {"true", "false"}:
+            value = v == "true"
         else:
             try:
-                if '.' in value:
-                    value = float(value)
+                if '.' in v or 'e' in v:  # handles floats like 1e-3
+                    value = float(v)
                 else:
-                    value = int(value)
+                    value = int(v)
             except ValueError:
-                pass
+                value = value  # leave as string if conversion fails
 
     sub_dict[keys[-1]] = value
-
 
 
 def train_circuit(
