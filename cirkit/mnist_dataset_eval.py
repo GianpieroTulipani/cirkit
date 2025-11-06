@@ -213,7 +213,7 @@ if __name__ == "__main__":
             use_miwae=params["use_miwae"],
             data_format="image",
             image_shape=tuple(params["image_shape"]),
-            device=device
+            device=device,
             weight_dir=r"cirkit\best_categorical_miwae.pt"
         )
         symbolic_circuit = spn_learner.quad_spn(
