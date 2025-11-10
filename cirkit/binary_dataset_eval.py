@@ -9,6 +9,8 @@ import numpy as np
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import wandb
+from dotenv import load_dotenv
+from loguru import logger
 
 from cirkit.pipeline import PipelineContext
 from cirkit.templates.learn_spn import LearnSPN
@@ -211,6 +213,8 @@ if __name__ == "__main__":
     # Initialize W&B
     use_wandb = config.get("logging", {}).get("use_wandb", True)
     if use_wandb:
+        load_dotenv(os.path.join(os.getcwd(), "api_key.env"))
+        api_key = os.getenv("WANDB_API_KEY")
         wandb.login()
         wandb.init(project=config.get("project", "cirkit_openml"), config=config)
 
