@@ -9,7 +9,6 @@ import numpy as np
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import wandb
-from dotenv import load_dotenv
 from loguru import logger
 
 from cirkit.pipeline import PipelineContext
@@ -84,7 +83,7 @@ def train_circuit(symbolic_circuit, train_loader, val_loader, num_epochs, lr, we
                 val_losses.append((-log_liks.mean()).item())
         avg_val_nll = np.mean(val_losses)
 
-        print(f"Epoch {epoch}: Train NLL={avg_train_nll:.4f} | Val NLL={avg_val_nll:.4f}")
+        logger.info(f"Epoch {epoch}: Train NLL={avg_train_nll:.4f} | Val NLL={avg_val_nll:.4f}")
 
         if log_to_wandb:
             wandb.log({
@@ -96,7 +95,7 @@ def train_circuit(symbolic_circuit, train_loader, val_loader, num_epochs, lr, we
         if avg_val_nll < best_val_nll:
             best_val_nll = avg_val_nll
             torch.save(circuit.state_dict(), save_path)
-            print(f"✅ New best model at epoch {epoch}, Val NLL={best_val_nll:.4f}")
+            logger.success(f"✅ New best model at epoch {epoch}, Val NLL={best_val_nll:.4f}")
 
         logs["epoch"].append(epoch)
         logs["train_nll"].append(avg_train_nll)
@@ -119,7 +118,7 @@ def evaluate_circuit(circuit, test_loader, device="cpu", checkpoint_path="best_c
             test_losses.append((-log_liks.mean()).item())
 
     avg_test_nll = np.mean(test_losses)
-    print(f"📊 Test NLL: {avg_test_nll:.4f}")
+    logger.info(f"📊 Test NLL: {avg_test_nll:.4f}")
 
     if log_to_wandb:
         wandb.log({"test_nll": avg_test_nll})
@@ -207,14 +206,12 @@ if __name__ == "__main__":
             key, val = override_str.split("=", 1)
             set_nested_key(config, key, val)
 
-    print("⚙️ Final Configuration:")
-    print(yaml.dump(config, sort_keys=False, default_flow_style=False))
+    logger.info("⚙️ Final Configuration:")
+    logger.info(yaml.dump(config, sort_keys=False, default_flow_style=False))
 
     # Initialize W&B
     use_wandb = config.get("logging", {}).get("use_wandb", True)
     if use_wandb:
-        load_dotenv(os.path.join(os.getcwd(), "api_key.env"))
-        api_key = os.getenv("WANDB_API_KEY")
         wandb.login()
         wandb.init(project=config.get("project", "cirkit_openml"), config=config)
 
@@ -241,18 +238,18 @@ if __name__ == "__main__":
     # Build circuit
     mode = config["mode"].lower()
     if mode == "learn_spn":
-        print("🧠 Building LearnSPN structure...")
+        logger.info("🧠 Building LearnSPN structure...")
         symbolic_circuit = build_spn_structure(train_data, device, config["learn_spn"])
     elif mode in ["rbt", "random_binary_tree"]:
-        print("🌲 Building Random Binary Tree structure...")
+        logger.info("🌲 Building Random Binary Tree structure...")
         symbolic_circuit = build_random_binary_tree_structure(dataset.shape[1], dataset, config["rbt"])
     elif mode in ["clt", "chow_liu_tree"]:
-        print("🌳 Building Chow–Liu Tree structure...")
+        logger.info("🌳 Building Chow–Liu Tree structure...")
         symbolic_circuit = build_chow_liu_tree_structure(dataset, config["clt"])
     else:
         raise ValueError("Invalid mode in config.yaml or CLI override.")
 
-    print(f"✅ Circuit built with {len(list(symbolic_circuit.layers))} layers")
+    logger.info(f"✅ Circuit built with {len(list(symbolic_circuit.layers))} layers")
 
     torch.cuda.empty_cache()
     gc.collect()
