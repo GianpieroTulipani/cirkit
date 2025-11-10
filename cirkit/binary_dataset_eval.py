@@ -212,7 +212,7 @@ if __name__ == "__main__":
     # Initialize W&B
     use_wandb = config.get("logging", {}).get("use_wandb", True)
     if use_wandb:
-        wandb.login()
+        #wandb.login()
         wandb.init(project=config.get("project", "cirkit_openml"), config=config)
 
     # Load dataset
