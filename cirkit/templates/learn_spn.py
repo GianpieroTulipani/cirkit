@@ -190,7 +190,7 @@ class LearnSPN:
 
         all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
         all_feats = torch.arange(data.size(1), device=self.device, dtype=torch.long)
-        queue = [Task(all_rows, all_feats, None)]
+        queue = [Task(all_feats, all_rows, None)]
 
         while queue:
             task = queue.pop()
