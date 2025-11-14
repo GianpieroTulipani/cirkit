@@ -113,7 +113,6 @@ class LearnSPN:
         in_layers: Dict[Layer, List[Layer]] = {}
         root: List[Layer] = []
 
-        N, D = data.shape
         num_categories = int(data.max().item() + 1)
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
@@ -125,7 +124,7 @@ class LearnSPN:
             if use_estimated:
                 layer = self._make_leaf_layer_estimated(
                     feat_ids,
-                    instance_ids,
+                    all_rows, #instance_ids,
                     data,
                     num_input_units,
                     num_categories,
@@ -169,37 +168,32 @@ class LearnSPN:
                 return
 
             if use_estimated:
-                if parent is not None:
-                    layer = self._make_sum_layer_estimated(clusters, num_input_units, num_sum_units, activation)
-                else:
-                    layer = self._make_sum_layer_estimated(clusters, num_input_units, 1, activation)
-                    root.append(layer)
+                    layer = self._make_sum_layer_estimated(
+                        clusters, 
+                        num_input_units, 
+                        1 if parent is None else num_sum_units,
+                        activation)
             else:
-                if parent is not None:
-                    layer = SumLayer(
-                        num_input_units=num_input_units, 
-                        num_output_units=num_sum_units, 
-                        arity=2, 
-                        weight_factory=sum_weight_factory)
-                else:
-                    layer = SumLayer(
-                        num_input_units=num_sum_units, 
-                        num_output_units=1, 
-                        arity=2, 
-                        weight_factory=sum_weight_factory)
-                    root.append(layer)
+                layer = SumLayer(
+                    num_input_units=num_sum_units, 
+                    num_output_units=1 if parent is None else num_sum_units, 
+                    arity=2, 
+                    weight_factory=sum_weight_factory)
 
             layers.append(layer)
             if parent is not None:
                 in_layers.setdefault(parent, []).append(layer)
+                root.append(layer)
 
-            stack.append(Task(feat_ids, clusters[1], layer))
-            stack.append(Task(feat_ids, clusters[0], layer))
+            queue.append(Task(feat_ids, clusters[1], layer))
+            queue.append(Task(feat_ids, clusters[0], layer))
 
-        stack = [Task(torch.arange(D, device=self.device), torch.arange(N, device=self.device), None)]
+        all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
+        all_feats = torch.arange(data.size(1), device=self.device, dtype=torch.long)
+        queue = [Task(all_rows, all_feats, None)]
 
-        while stack:
-            task = stack.pop()
+        while queue:
+            task = queue.pop()
             feat_ids, instance_ids, parent = task.feat_ids, task.instance_ids, task.parent
 
             if feat_ids.numel() == 1:
@@ -217,8 +211,8 @@ class LearnSPN:
                     layers.append(layer)
                     in_layers.setdefault(parent, []).append(layer)
 
-                    stack.append(Task(V_indep, instance_ids, layer))
-                    stack.append(Task(V_dep, instance_ids, layer))
+                    queue.append(Task(V_indep, instance_ids, layer))
+                    queue.append(Task(V_dep, instance_ids, layer))
                     continue
 
             _handle_cluster_split(feat_ids, instance_ids, parent)
@@ -233,18 +227,15 @@ class LearnSPN:
             activation: str = 'softmax',
             num_input_units: int = 1,
             num_sum_units: int = 1
-            ) -> Circuit:
+        ) -> Circuit:
         
-
         assert self.data_format == 'image', "quad_spn only supports image data_format"
 
         layers: List[Layer] = []
         in_layers: Dict[Layer, List[Layer]] = {}
-        node_to_layer: Dict[RegionGraphNode, Layer] = {}
 
-        # caches
-        leaf_cache: Dict[int, Layer] = {}          # feature_idx -> Layer (leaf)
-        node_layer_cache: Dict[RegionGraphNode, Layer] = {}  # node -> Layer (for any node)
+        leaf_cache: Dict[int, Layer] = {}                  
+        node_layer_cache: Dict[RegionGraphNode, Layer] = {} 
 
         qg = QuadGraph(self.image_shape)
         num_categories = int(data.max().item() + 1)
@@ -256,22 +247,19 @@ class LearnSPN:
         while queue:
             node, parent_layer, rows_idx = queue.popleft()
 
-            # If we've already created a layer for this node, reuse it.
             if node in node_layer_cache:
                 node_layer = node_layer_cache[node]
-                node_to_layer[node] = node_layer
+
             else:
-                # --- Leaf region node (no region_inputs) ---
                 if isinstance(node, RegionNode) and not qg.region_inputs(node):
                     scope_vars = list(node.scope)
 
                     if len(scope_vars) == 1:
                         feat = int(scope_vars[0])
-                        # create leaf once per feature (estimate with all_rows)
                         if feat not in leaf_cache:
                             leaf = self._make_leaf_layer_estimated(
                                 feat_idx=feat,
-                                instance_ids=all_rows,            # use all_rows for estimation
+                                instance_ids=all_rows,
                                 data=data,
                                 num_input_units=num_input_units,
                                 num_categories=num_categories,
@@ -280,12 +268,11 @@ class LearnSPN:
                             )
                             leaf_cache[feat] = leaf
                             layers.append(leaf)
+
                         node_layer = leaf_cache[feat]
                         node_layer_cache[node] = node_layer
-                        node_to_layer[node] = node_layer
 
                     else:
-                        # multiple features in this leaf node -> use shared feature leaves + one Hadamard per node
                         feat_layers: List[Layer] = []
                         for sc in scope_vars:
                             fi = int(sc)
@@ -303,15 +290,13 @@ class LearnSPN:
                                 layers.append(leaf)
                             feat_layers.append(leaf_cache[fi])
 
-                        # create Hadamard for this node (only once)
                         had = HadamardLayer(num_input_units, arity=len(feat_layers))
                         layers.append(had)
-                        in_layers[had] = feat_layers[:]  # wire hadamard to the feature leaf layers
+                        in_layers[had] = feat_layers[:]
+
                         node_layer = had
                         node_layer_cache[node] = node_layer
-                        node_to_layer[node] = node_layer
 
-                # --- Internal region node (has region_inputs) ---
                 elif isinstance(node, RegionNode):
                     children = qg.region_inputs(node)
                     arity = len(children)
@@ -319,7 +304,6 @@ class LearnSPN:
                     feat_ids = torch.tensor(list(node.scope), dtype=torch.long, device=data.device)
                     clusters = self._cluster_instances(feat_ids, rows_idx, data, arity)
 
-                    # Create ONE sum layer for this node (use clusters only to init if needed).
                     node_layer = self._make_sum_layer_estimated(
                         clusters=clusters,
                         num_input_units=num_input_units,
@@ -328,20 +312,16 @@ class LearnSPN:
                     )
                     layers.append(node_layer)
                     node_layer_cache[node] = node_layer
-                    node_to_layer[node] = node_layer
 
-                    # enqueue children with their cluster-specific instance indices
                     for child_node, cluster_ids in zip(children, clusters):
                         queue.append((child_node, node_layer, cluster_ids))
 
-                # --- Partition node (combine children with Hadamard) ---
                 elif isinstance(node, PartitionNode):
                     children = qg.partition_inputs(node)
-                    # create Hadamard per partition node (only once)
+
                     node_layer = HadamardLayer(num_sum_units, arity=len(children))
                     layers.append(node_layer)
                     node_layer_cache[node] = node_layer
-                    node_to_layer[node] = node_layer
 
                     for child_node in children:
                         queue.append((child_node, node_layer, rows_idx))
@@ -349,122 +329,14 @@ class LearnSPN:
                 else:
                     raise RuntimeError(f"Unknown node type: {type(node)}")
 
-            # Wire parent -> child in_layers mapping (may happen even if we reused the node layer)
             if parent_layer is not None:
+                child_layer = node_layer_cache[node]
                 parent_list = in_layers.setdefault(parent_layer, [])
-                # avoid duplicate appends
-                if node_to_layer[node] not in parent_list:
-                    parent_list.append(node_to_layer[node])
+                if child_layer not in parent_list:
+                    parent_list.append(child_layer)
 
-        outputs = [node_to_layer[rgn] for rgn in qg.outputs]
+        outputs = [node_layer_cache[rgn] for rgn in qg.outputs]
         return Circuit(layers, in_layers, outputs)
-
-    """def quad_spn(
-        self,
-        data: LongTensor,
-        input_layer: str = 'categorical',
-        activation: str = 'softmax',
-        num_input_units: int = 1,
-        num_sum_units: int = 1
-    ) -> Circuit:
-        
-        assert self.data_format == 'image', "quad_spn only supports image data_format"
-
-        layers: List[Layer] = []
-        in_layers: Dict[Layer, List[Layer]] = {}
-        node_to_layer: Dict[RegionGraphNode, Layer] = {}
-    
-        qg = QuadGraph(self.image_shape)
-        num_categories = int(data.max().item() + 1)
-        input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
-    
-        all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
-
-        queue = deque([(out, None, all_rows) for out in qg.outputs])
-
-        while queue:
-            node, parent_layer, rows_idx = queue.popleft()
-            if isinstance(node, RegionNode) and not qg.region_inputs(node):
-                scope_vars = list(node.scope)
-    
-                if len(scope_vars) == 1:
-                    feat = int(scope_vars[0])
-
-                    layer = self._make_leaf_layer_estimated(
-                        feat_idx=feat,
-                        instance_ids=rows_idx,
-                        data=data,
-                        num_input_units=num_input_units,
-                        num_categories=num_categories,
-                        activation=activation,
-                        input_factory=input_factory
-                    )
-                    layers.append(layer)
-                    node_to_layer[node] = layer
-    
-                else:
-                    feat_layers: List[Layer] = []
-                    for sc in scope_vars:
-                        in_layer = self._make_leaf_layer_estimated(
-                            feat_idx=int(sc),
-                            instance_ids=rows_idx,
-                            data=data,
-                            num_input_units=num_input_units,
-                            num_categories=num_categories,
-                            activation=activation,
-                            input_factory=input_factory
-                        )
-                        layers.append(in_layer)
-                        feat_layers.append(in_layer)
-    
-                    layer = HadamardLayer(num_input_units, arity=len(feat_layers))
-                    layers.append(layer)
-                    in_layers[layer] = feat_layers
-                    node_to_layer[node] = layer
-    
-            elif isinstance(node, RegionNode):
-                children = qg.region_inputs(node)
-
-                arity = len(children)
-    
-                feat_ids = torch.tensor(list(node.scope), dtype=torch.long, device=data.device)
-                
-                clusters = self._cluster_instances(feat_ids, rows_idx, data, arity)
-                if parent_layer is None:
-                    layer = self._make_sum_layer_estimated(
-                        clusters=clusters,
-                        num_input_units=num_input_units,
-                        num_sum_units=1,
-                        activation=activation,
-                    )
-                else:
-                    layer = self._make_sum_layer_estimated(
-                        clusters=clusters,
-                        num_input_units=num_input_units,
-                        num_sum_units=num_sum_units,
-                        activation=activation,
-                    )
-                layers.append(layer)
-                node_to_layer[node] = layer
-    
-                for child_node, cluster_ids in zip(children, clusters):
-                    queue.append((child_node, layer, cluster_ids))
-    
-            elif isinstance(node, PartitionNode):
-                children = qg.partition_inputs(node)
-                layer = HadamardLayer(num_sum_units, arity=len(children))
-                layers.append(layer)
-                node_to_layer[node] = layer
-    
-                for child_node in children:
-                    queue.append((child_node, layer, rows_idx))
-    
-            if parent_layer is not None:
-                parent_list = in_layers.setdefault(parent_layer, [])
-                parent_list.append(node_to_layer[node])
-    
-        outputs = [node_to_layer[rgn] for rgn in qg.outputs]
-        return Circuit(layers, in_layers, outputs)"""
 
     def _split_features_local(
         self,

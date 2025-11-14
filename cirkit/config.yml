@@ -1,3 +1,8 @@
+project: "binary-dataset"
+
+logging:
+  use_wandb: true
+
 mode: "learn_spn"
 
 dataset:
