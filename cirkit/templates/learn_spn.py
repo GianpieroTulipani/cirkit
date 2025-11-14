@@ -168,18 +168,19 @@ class LearnSPN:
                 layer = self._make_sum_layer_estimated(
                     clusters, 
                     num_input_units, 
-                    1 if parent is None else num_sum_units,
+                    (1 if parent is None else num_sum_units),
                     activation)
             else:
                 layer = SumLayer(
                     num_input_units=num_sum_units, 
-                    num_output_units=1 if parent is None else num_sum_units, 
+                    num_output_units=(1 if parent is None else num_sum_units), 
                     arity=2, 
                     weight_factory=sum_weight_factory)
 
             layers.append(layer)
             if parent is not None:
                 in_layers.setdefault(parent, []).append(layer)
+            else:
                 root.append(layer)
 
             queue.append((feat_ids, clusters[1], layer))
@@ -253,7 +254,7 @@ class LearnSPN:
                         if feat not in leaf_cache:
                             leaf = self._make_leaf_layer_estimated(
                                 feat_idx=feat,
-                                instance_ids=all_rows,
+                                instance_ids=rows_idx, #all_rows,
                                 data=data,
                                 num_input_units=num_input_units,
                                 num_categories=num_categories,
@@ -273,7 +274,7 @@ class LearnSPN:
                             if fi not in leaf_cache:
                                 leaf = self._make_leaf_layer_estimated(
                                     feat_idx=fi,
-                                    instance_ids=all_rows,
+                                    instance_ids=rows_idx, #all_rows,
                                     data=data,
                                     num_input_units=num_input_units,
                                     num_categories=num_categories,
