@@ -339,7 +339,7 @@ class LearnSPN:
         instance_ids: LongTensor,
         data: Tensor,
         num_categories: int,
-        chunk_size: int = 1000,
+        chunk_size: int = 10_000,
     ) -> Tuple[LongTensor, LongTensor]:
         sub = data.index_select(1, feat_ids) #.index_select(0, instance_ids)
         n = feat_ids.numel()
