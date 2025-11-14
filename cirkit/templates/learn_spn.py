@@ -26,12 +26,6 @@ from cirkit.templates.region_graph import RegionNode, PartitionNode, RegionGraph
 from cirkit.utils.scope import Scope
 from cirkit.templates.region_graph.algorithms.chow_liu import _categorical_mutual_info
 
-@dataclass
-class Task:
-    feat_ids: LongTensor
-    instance_ids: LongTensor
-    parent: Optional[Layer]
-
 class LearnSPN:
     def __init__(
         self,
@@ -116,6 +110,9 @@ class LearnSPN:
         num_categories = int(data.max().item() + 1)
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
+        all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
+        all_feats = torch.arange(data.size(1), device=self.device, dtype=torch.long)
+
         if not use_estimated:
             sum_weight_param = Parameterization(activation=activation, initialization=initialization)
             sum_weight_factory = parameterization_to_factory(sum_weight_param)
@@ -142,7 +139,7 @@ class LearnSPN:
                 feats = [
                     self._make_leaf_layer_estimated(
                         int(f),
-                        instance_ids,
+                        all_rows,#instance_ids,
                         data, 
                         num_input_units, 
                         num_categories, 
@@ -168,11 +165,11 @@ class LearnSPN:
                 return
 
             if use_estimated:
-                    layer = self._make_sum_layer_estimated(
-                        clusters, 
-                        num_input_units, 
-                        1 if parent is None else num_sum_units,
-                        activation)
+                layer = self._make_sum_layer_estimated(
+                    clusters, 
+                    num_input_units, 
+                    1 if parent is None else num_sum_units,
+                    activation)
             else:
                 layer = SumLayer(
                     num_input_units=num_sum_units, 
@@ -185,16 +182,13 @@ class LearnSPN:
                 in_layers.setdefault(parent, []).append(layer)
                 root.append(layer)
 
-            queue.append(Task(feat_ids, clusters[1], layer))
-            queue.append(Task(feat_ids, clusters[0], layer))
+            queue.append((feat_ids, clusters[1], layer))
+            queue.append((feat_ids, clusters[0], layer))
 
-        all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
-        all_feats = torch.arange(data.size(1), device=self.device, dtype=torch.long)
-        queue = [Task(all_feats, all_rows, None)]
+        queue = [(all_feats, all_rows, None)]
 
         while queue:
-            task = queue.pop()
-            feat_ids, instance_ids, parent = task.feat_ids, task.instance_ids, task.parent
+            feat_ids, instance_ids, parent = queue.pop()
 
             if feat_ids.numel() == 1:
                 _make_leaf_and_attach(feat_ids, instance_ids, parent)
@@ -211,8 +205,8 @@ class LearnSPN:
                     layers.append(layer)
                     in_layers.setdefault(parent, []).append(layer)
 
-                    queue.append(Task(V_indep, instance_ids, layer))
-                    queue.append(Task(V_dep, instance_ids, layer))
+                    queue.append((V_indep, instance_ids, layer))
+                    queue.append((V_dep, instance_ids, layer))
                     continue
 
             _handle_cluster_split(feat_ids, instance_ids, parent)
