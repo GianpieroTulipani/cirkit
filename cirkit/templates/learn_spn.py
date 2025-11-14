@@ -341,7 +341,7 @@ class LearnSPN:
         num_categories: int,
         chunk_size: int = 1000,
     ) -> Tuple[LongTensor, LongTensor]:
-        sub = data.index_select(0, instance_ids).index_select(1, feat_ids)
+        sub = data.index_select(1, feat_ids) #.index_select(0, instance_ids)
         n = feat_ids.numel()
 
         if self.data_format == 'image':
