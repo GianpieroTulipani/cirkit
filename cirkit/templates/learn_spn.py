@@ -121,7 +121,7 @@ class LearnSPN:
             if use_estimated:
                 layer = self._make_leaf_layer_estimated(
                     feat_ids,
-                    all_rows,
+                    instance_ids,
                     data,
                     num_input_units,
                     num_categories,
@@ -139,7 +139,7 @@ class LearnSPN:
                 feats = [
                     self._make_leaf_layer_estimated(
                         int(f),
-                        all_rows,
+                        instance_ids,
                         data, 
                         num_input_units, 
                         num_categories, 
