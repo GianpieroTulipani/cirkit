@@ -117,11 +117,11 @@ class LearnSPN:
             sum_weight_param = Parameterization(activation=activation, initialization=initialization)
             sum_weight_factory = parameterization_to_factory(sum_weight_param)
 
-        def _make_leaf_and_attach(feat_ids: int, instance_ids: LongTensor, parent):
+        def _make_leaf_and_attach(feat_ids: int, parent):
             if use_estimated:
                 layer = self._make_leaf_layer_estimated(
                     feat_ids,
-                    instance_ids,
+                    all_rows,
                     data,
                     num_input_units,
                     num_categories,
@@ -134,12 +134,12 @@ class LearnSPN:
             in_layers.setdefault(parent, []).append(layer)
 
 
-        def _handle_small_instances(feat_ids: LongTensor, instance_ids: LongTensor, parent):
+        def _handle_small_instances(feat_ids: LongTensor, parent):
             if use_estimated:
                 feats = [
                     self._make_leaf_layer_estimated(
                         int(f),
-                        instance_ids,
+                        all_rows,
                         data, 
                         num_input_units, 
                         num_categories, 
@@ -161,7 +161,7 @@ class LearnSPN:
         def _handle_cluster_split(feat_ids: LongTensor, instance_ids: LongTensor, parent):
             clusters = self._cluster_instances(feat_ids, instance_ids, data)
             if clusters[0].numel() == 0 or clusters[1].numel() == 0:
-                _handle_small_instances(feat_ids, instance_ids, parent)
+                _handle_small_instances(feat_ids, parent)
                 return
 
             if use_estimated:
@@ -192,11 +192,11 @@ class LearnSPN:
             feat_ids, instance_ids, parent = queue.pop()
 
             if feat_ids.numel() == 1:
-                _make_leaf_and_attach(feat_ids, instance_ids, parent)
+                _make_leaf_and_attach(feat_ids, parent)
                 continue
 
             if instance_ids.numel() <= self.min_instances:
-                _handle_small_instances(feat_ids, instance_ids, parent)
+                _handle_small_instances(feat_ids, parent)
                 continue
 
             if parent is not None:
