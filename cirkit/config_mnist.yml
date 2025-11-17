@@ -23,7 +23,7 @@ learn_spn:
   alpha: 0.5
   min_instances: 1000
   mi_quantile: 0.6
-  jitter_scale: 0.5
+  noise_scale: 0.5
   use_miwae: false
   num_input_units: 1
   num_sum_units: 1
@@ -31,7 +31,7 @@ learn_spn:
 
 quad_spn:
   alpha: 5.0
-  jitter_scale: 0.5
+  noise_scale: 0.5
   use_miwae: false
   num_input_units: 1
   num_sum_units: 1
