@@ -255,7 +255,7 @@ class LearnSPN:
                         if feat not in leaf_cache:
                             leaf = self._make_input_layer_estimated(
                                 feat_idx=feat,
-                                instance_ids=all_rows,
+                                instance_ids=rows_idx, #all_rows
                                 data=data,
                                 num_input_units=num_input_units,
                                 num_categories=num_categories,
@@ -275,7 +275,7 @@ class LearnSPN:
                             if fi not in leaf_cache:
                                 leaf = self._make_input_layer_estimated(
                                     feat_idx=fi,
-                                    instance_ids=all_rows,
+                                    instance_ids=rows_idx, #all_rows
                                     data=data,
                                     num_input_units=num_input_units,
                                     num_categories=num_categories,
