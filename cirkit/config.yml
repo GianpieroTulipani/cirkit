@@ -22,7 +22,7 @@ learn_spn:
   alpha: 50.0
   min_instances: 200
   mi_quantile: 0.6
-  jitter_scale: 5e-1
+  noise_scale: 5e-1
   initialization: "estimated"
   num_input_units: 1
   num_sum_units: 1

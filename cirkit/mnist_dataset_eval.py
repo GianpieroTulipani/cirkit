@@ -191,7 +191,7 @@ if __name__ == "__main__":
             alpha=params["alpha"],
             min_instances=params["min_instances"],
             mi_quantile=params["mi_quantile"],
-            jitter_scale=params["jitter_scale"],
+            noise_scale=params["noise_scale"],
             use_miwae=params["use_miwae"],
             data_format="image",
             image_shape=tuple(params["image_shape"]),
@@ -211,7 +211,7 @@ if __name__ == "__main__":
         params = cfg["quad_spn"]
         spn_learner = LearnSPN(
             alpha=params["alpha"],
-            jitter_scale=params["jitter_scale"],
+            noise_scale=params["noise_scale"],
             use_miwae=params["use_miwae"],
             data_format="image",
             image_shape=tuple(params["image_shape"]),
