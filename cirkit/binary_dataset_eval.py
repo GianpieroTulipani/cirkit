@@ -131,7 +131,7 @@ def build_spn_structure(train_data, device, params):
         alpha=params["alpha"],
         min_instances=params["min_instances"],
         mi_quantile=params["mi_quantile"],
-        jitter_scale=params["jitter_scale"],
+        noise_scale=params["noise_scale"],
         device="cuda",
         data_format='tabular'
     )
