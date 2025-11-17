@@ -35,7 +35,7 @@ class LearnSPN:
         local_radius: int = 4,
         image_shape: Tuple[int, int] = (1, 28, 28),
         seed: Optional[int] = 42,
-        jitter_scale: float = 1e-1,
+        noise_scale: float = 1e-1,
         use_miwae: bool = False,
         weight_dir: str = None,
         device: Optional[torch.device] = None,
@@ -48,7 +48,7 @@ class LearnSPN:
         self.min_instances = min_instances
         self.mi_quantile = mi_quantile
         self.local_radius = local_radius
-        self.jitter_scale = jitter_scale
+        self.noise_scale = noise_scale
         self.image_shape = image_shape
         self.use_miwae = use_miwae
         self.data_format = data_format
@@ -120,7 +120,7 @@ class LearnSPN:
 
         def _make_leaf_and_attach(feat_ids: int, instance_ids: LongTensor, parent):
             if use_estimated:
-                layer = self._make_leaf_layer_estimated(
+                layer = self._make_input_layer_estimated(
                     feat_ids,
                     instance_ids,
                     data,
@@ -138,7 +138,7 @@ class LearnSPN:
         def _handle_small_instances(feat_ids: LongTensor, instance_ids: LongTensor, parent):
             if use_estimated:
                 feats = [
-                    self._make_leaf_layer_estimated(
+                    self._make_input_layer_estimated(
                         int(f),
                         instance_ids,
                         data, 
@@ -201,14 +201,14 @@ class LearnSPN:
                 continue
 
             if parent is not None:
-                V_dep, V_indep = self._split_features_local(feat_ids, instance_ids, data, num_categories, chunk_size)
-                if V_indep.numel() > 0:
+                feat_dep, feat_indep = self._split_features_local(feat_ids, instance_ids, data, num_categories, chunk_size)
+                if feat_indep.numel() > 0:
                     layer = HadamardLayer(num_input_units, arity=2)
                     layers.append(layer)
                     in_layers.setdefault(parent, []).append(layer)
 
-                    queue.append((V_indep, instance_ids, layer))
-                    queue.append((V_dep, instance_ids, layer))
+                    queue.append((feat_indep, instance_ids, layer))
+                    queue.append((feat_dep, instance_ids, layer))
                     continue
 
             _handle_cluster_split(feat_ids, instance_ids, parent)
@@ -253,9 +253,9 @@ class LearnSPN:
                     if len(scope_vars) == 1:
                         feat = int(scope_vars[0])
                         if feat not in leaf_cache:
-                            leaf = self._make_leaf_layer_estimated(
+                            leaf = self._make_input_layer_estimated(
                                 feat_idx=feat,
-                                instance_ids=all_rows, #all_rows,
+                                instance_ids=all_rows,
                                 data=data,
                                 num_input_units=num_input_units,
                                 num_categories=num_categories,
@@ -273,9 +273,9 @@ class LearnSPN:
                         for sc in scope_vars:
                             fi = int(sc)
                             if fi not in leaf_cache:
-                                leaf = self._make_leaf_layer_estimated(
+                                leaf = self._make_input_layer_estimated(
                                     feat_idx=fi,
-                                    instance_ids=all_rows, #all_rows,
+                                    instance_ids=all_rows,
                                     data=data,
                                     num_input_units=num_input_units,
                                     num_categories=num_categories,
@@ -392,9 +392,9 @@ class LearnSPN:
                 visited[v] = True
                 stack.append(v)
 
-        V_dep = feat_ids[visited]
-        V_indep = feat_ids[~visited]
-        return V_dep, V_indep
+        feat_dep = feat_ids[visited]
+        feat_indep = feat_ids[~visited]
+        return feat_dep, feat_indep
 
     def _cluster_instances(
         self, 
@@ -439,7 +439,7 @@ class LearnSPN:
 
         return clusters
 
-    def _make_leaf_layer_estimated(
+    def _make_input_layer_estimated(
         self,
         feat_idx: int,
         instance_ids: LongTensor,
@@ -461,8 +461,8 @@ class LearnSPN:
         else:
             base = np.log(probs_np)
             logits = np.tile(base.reshape(1, num_categories), (num_input_units, 1))
-            if self.jitter_scale and self.jitter_scale > 0.0:
-                logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
+            if self.noise_scale and self.noise_scale > 0.0:
+                logits = logits + np.random.normal(loc=0.0, scale=self.noise_scale, size=logits.shape)
 
         tp = TensorParameter(num_input_units, num_categories, initializer=ConstantTensorInitializer(logits), learnable=True)
         unary_op_factory = name_to_parameter_activation(activation)
@@ -492,8 +492,8 @@ class LearnSPN:
             rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, arity * num_input_units)
             
             logits = np.log(rep_weights_flat)
-            if self.jitter_scale and self.jitter_scale > 0.0:
-                logits = logits + np.random.normal(loc=0.0, scale=self.jitter_scale, size=logits.shape)
+            if self.noise_scale and self.noise_scale > 0.0:
+                logits = logits + np.random.normal(loc=0.0, scale=self.noise_scale, size=logits.shape)
 
         tp = TensorParameter(
             num_sum_units,
