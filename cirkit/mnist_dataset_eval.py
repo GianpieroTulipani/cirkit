@@ -59,6 +59,12 @@ def train_circuit(
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     best_val_nll = float("inf")
 
+    epoch_list = []
+    train_nll_list = []
+    val_nll_list = []
+    train_bpd_list = []
+    val_bpd_list = []
+
     logs = {"epoch": [], "train_nll": [], "val_nll": [], "train_bpd": [], "val_bpd": []}
 
     for epoch in range(1, num_epochs + 1):
@@ -92,6 +98,12 @@ def train_circuit(
         bpd_val = avg_val_nll / (28 * 28 * np.log(2.0))
         logger.info(f"Epoch {epoch} — Val NLL: {avg_val_nll:.4f} | bpd: {bpd_val:.4f}")
 
+        epoch_list.append(epoch)
+        train_nll_list.append(avg_train_nll)
+        val_nll_list.append(avg_val_nll)
+        train_bpd_list.append(bpd_train)
+        val_bpd_list.append(bpd_val)
+
         logs["epoch"].append(epoch)
         logs["train_nll"].append(avg_train_nll)
         logs["val_nll"].append(avg_val_nll)
@@ -112,6 +124,39 @@ def train_circuit(
             torch.save(circuit.state_dict(), save_path)
             logger.success(f"New best model at epoch {epoch}, Val NLL: {best_val_nll:.4f}")
 
+    if log_to_wandb:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+        ax = axes[0]
+        ax.scatter(epoch_list, train_nll_list, label='Train NLL', marker='o')
+        ax.plot(epoch_list, train_nll_list, linestyle='-', alpha=0.6)
+        ax.scatter(epoch_list, val_nll_list, label='Val NLL', marker='x')
+        ax.plot(epoch_list, val_nll_list, linestyle='--', alpha=0.6)
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('NLL')
+        ax.set_title('NLL per Epoch')
+        ax.grid(True)
+        ax.legend()
+    
+        ax = axes[1]
+        ax.scatter(epoch_list, train_bpd_list, label='Train bpd', marker='o')
+        ax.plot(epoch_list, train_bpd_list, linestyle='-', alpha=0.6)
+        ax.scatter(epoch_list, val_bpd_list, label='Val bpd', marker='x')
+        ax.plot(epoch_list, val_bpd_list, linestyle='--', alpha=0.6)
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('bpd')
+        ax.set_title('bits-per-dimension (bpd) per Epoch')
+        ax.grid(True)
+        ax.legend()
+    
+        plt.tight_layout()
+        fig_path = 'learning_curve.png'
+        fig.savefig(fig_path, dpi=150)
+        try:
+            wandb.log({"learning_curve": wandb.Image(fig_path)})
+        except Exception as e:
+            logger.error(f"Failed to log learning curve to wandb: {e}")
+        plt.close(fig)
     return circuit, logs
 
 
