@@ -267,6 +267,7 @@ if __name__ == "__main__":
             train_data.dataset,
             input_layer="categorical",
             activation="softmax",
+            initialization=params["initialization"],
             num_input_units=params["num_input_units"],
             num_sum_units=params["num_sum_units"]
         )
