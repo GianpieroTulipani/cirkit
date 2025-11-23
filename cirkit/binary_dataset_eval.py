@@ -182,9 +182,6 @@ def build_chow_liu_tree_structure(dataset, params):
     )
 
 
-# ======================================================
-# 🚀 Main
-# ======================================================
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Probabilistic Circuit (with W&B logging)")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to YAML config file")
@@ -213,7 +210,7 @@ if __name__ == "__main__":
     use_wandb = config.get("logging", {}).get("use_wandb", True)
     if use_wandb:
         wandb.login()
-        wandb.init(project=config.get("project", "cirkit_openml"), config=config)
+        wandb.init(project=config.get("project", "learn-spn-connect4"), config=config)
 
     # Load dataset
     device = torch.device(config["training"]["device"] if torch.cuda.is_available() else "cpu")
