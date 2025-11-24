@@ -255,7 +255,7 @@ class LearnSPN:
                         if feat not in leaf_cache:
                             leaf = self._make_input_layer_estimated(
                                 feat_idx=feat,
-                                instance_ids=rows_idx, #all_rows
+                                instance_ids=rows_idx, 
                                 data=data,
                                 num_input_units=num_input_units,
                                 num_categories=num_categories,
@@ -275,7 +275,7 @@ class LearnSPN:
                             if fi not in leaf_cache:
                                 leaf = self._make_input_layer_estimated(
                                     feat_idx=fi,
-                                    instance_ids=rows_idx, #all_rows
+                                    instance_ids=rows_idx, 
                                     data=data,
                                     num_input_units=num_input_units,
                                     num_categories=num_categories,
@@ -317,6 +317,9 @@ class LearnSPN:
 
                     node_layer = HadamardLayer(num_sum_units, arity=len(children))
                     layers.append(node_layer)
+
+
+                    
                     node_layer_cache[node] = node_layer
 
                     for child_node in children:
@@ -374,7 +377,7 @@ class LearnSPN:
                 mi_mat[i_chunk, j_chunk] = mi_vals
                 mi_mat[j_chunk, i_chunk] = mi_vals
         else:
-            mi_mat = _categorical_mutual_info(sub, alpha=self.alpha, num_categories=num_categories)
+            mi_mat = _categorical_mutual_info(sub, alpha=self.alpha, num_categories=num_categories, chunk_size=chunk_size)
 
         triu = mi_mat.triu(diagonal=1)
         vals = triu.flatten()[triu.flatten() > 0]
