@@ -27,6 +27,7 @@ learn_spn:
   use_miwae: false
   num_input_units: 1
   num_sum_units: 1
+  initialization: "estimated"
   image_shape: [1, 28, 28]
 
 quad_spn:
