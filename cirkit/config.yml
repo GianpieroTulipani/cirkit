@@ -30,7 +30,7 @@ learn_spn:
 quad_spn:
   alpha: 0.5
   region_graph: "quad_graph"
-  noise_scale: 5e-1
+  noise_scale: 0.5
   num_input_units: 1
   num_sum_units: 1
 
