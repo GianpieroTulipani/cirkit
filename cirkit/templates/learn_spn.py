@@ -242,7 +242,8 @@ class LearnSPN:
         else:  # chow_liu_tree
             rg = ChowLiuTree(
                 data=data,
-                input_type=input_layer
+                input_type=input_layer,
+                as_region_graph=True
             )
             
         num_categories = int(data.max().item() + 1)
