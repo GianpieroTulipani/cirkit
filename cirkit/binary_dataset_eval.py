@@ -183,7 +183,7 @@ def build_quad_spn_structure(train_data, device, params):
 
 
 def build_chow_liu_tree_structure(train_data, params):
-    kwargs = int(dataset.nunique().max())
+    kwargs = int(train_data.nunique().max())
     data_tensor = train_data.dataset[train_data.indices].to(device)
     return tabular_data(
         region_graph='chow-liu-tree',
