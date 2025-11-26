@@ -182,12 +182,12 @@ def build_quad_spn_structure(train_data, device, params):
     )
 
 
-def build_chow_liu_tree_structure(dataset, params):
+def build_chow_liu_tree_structure(train_data, params):
     kwargs = int(dataset.nunique().max())
-    X_train = torch.tensor(dataset.values, dtype=torch.float32)
+    data_tensor = train_data.dataset[train_data.indices].to(device)
     return tabular_data(
         region_graph='chow-liu-tree',
-        data=X_train,
+        data=data_tensor,
         kwargs=kwargs,
         input_layer='categorical',
         num_input_units=params["num_input_units"],
@@ -259,7 +259,7 @@ if __name__ == "__main__":
         symbolic_circuit = build_random_binary_tree_structure(dataset.shape[1], dataset, config["rbt"])
     elif mode in ["clt", "chow_liu_tree"]:
         logger.info("🌳 Building Chow–Liu Tree structure...")
-        symbolic_circuit = build_chow_liu_tree_structure(dataset, config["clt"])
+        symbolic_circuit = build_chow_liu_tree_structure(train_data, config["clt"])
     elif mode =="quad-spn":
         logger.info("🧱 Building Quad-SPN structure...")
         symbolic_circuit = build_quad_spn_structure(train_data, device, config["quad_spn"])
