@@ -227,7 +227,6 @@ class LearnSPN:
             num_sum_units: int = 1
         ) -> Circuit:
         
-        assert self.data_format == 'image', "quad_spn only supports image data_format"
         assert region_graph in ('quad_graph', 'quad_tree', 'chow_liu_tree'), "region_graph should be either 'quad_graph', 'quad_tree' or 'chow_liu_tree'"
 
         layers: List[Layer] = []

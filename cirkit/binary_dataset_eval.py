@@ -163,6 +163,25 @@ def build_random_binary_tree_structure(num_features, dataset, params):
         )
     )
 
+def build_quad_spn_structure(train_data, device, params):
+    learner = LearnSPN(
+        alpha=params["alpha"],
+        noise_scale=params["noise_scale"],
+        device="cuda",
+        data_format='tabular',
+        image_shape=params["image_shape"]
+    )
+
+    data_tensor = train_data.dataset[train_data.indices].to(device)
+    return learner.quad_spn(
+        data_tensor,
+        region_graph=params.get("region_graph", "quad_graph"),
+        input_layer='categorical',
+        activation='softmax',
+        num_input_units=params["num_input_units"],
+        num_sum_units=params["num_sum_units"]
+    )
+
 
 def build_chow_liu_tree_structure(dataset, params):
     kwargs = int(dataset.nunique().max())
@@ -243,6 +262,9 @@ if __name__ == "__main__":
     elif mode in ["clt", "chow_liu_tree"]:
         logger.info("🌳 Building Chow–Liu Tree structure...")
         symbolic_circuit = build_chow_liu_tree_structure(dataset, config["clt"])
+    elif mode =="quad-spn":
+        logger.info("🧱 Building Quad-SPN structure...")
+        symbolic_circuit = build_quad_spn_structure(train_data, device, config["quad_spn"])
     else:
         raise ValueError("Invalid mode in config.yaml or CLI override.")
 
