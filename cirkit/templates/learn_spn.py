@@ -21,7 +21,8 @@ from cirkit.templates.utils import (
     parameterization_to_factory,
     name_to_parameter_activation,
 )
-from cirkit.templates.region_graph.algorithms import QuadGraph
+from cirkit.templates.region_graph.algorithms import QuadGraph, QuadTree
+from cirkit.templates.region_graph.algorithms.chow_liu import ChowLiuTree
 from cirkit.templates.region_graph import RegionNode, PartitionNode, RegionGraphNode
 from cirkit.utils.scope import Scope
 from cirkit.templates.region_graph.algorithms.chow_liu import _categorical_mutual_info
@@ -219,6 +220,7 @@ class LearnSPN:
     def quad_spn(
             self,
             data: LongTensor,
+            region_graph: str="quad_graph",
             input_layer: str = 'categorical',
             activation: str = 'softmax',
             num_input_units: int = 1,
@@ -226,6 +228,7 @@ class LearnSPN:
         ) -> Circuit:
         
         assert self.data_format == 'image', "quad_spn only supports image data_format"
+        assert region_graph in ('quad_graph', 'quad_tree', 'chow_liu_tree'), "region_graph should be either 'quad_graph', 'quad_tree' or 'chow_liu_tree'"
 
         layers: List[Layer] = []
         in_layers: Dict[Layer, List[Layer]] = {}
@@ -233,12 +236,21 @@ class LearnSPN:
         leaf_cache: Dict[int, Layer] = {}                  
         node_layer_cache: Dict[RegionGraphNode, Layer] = {} 
 
-        qg = QuadGraph(self.image_shape)
+        if region_graph == 'quad_graph':
+            rg = QuadGraph(self.image_shape)
+        elif region_graph == 'quad_tree':
+            rg = QuadTree(self.image_shape)
+        else:  # chow_liu_tree
+            rg = ChowLiuTree(
+                data=data,
+                input_type=input_layer
+            )
+            
         num_categories = int(data.max().item() + 1)
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
         all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
-        queue = deque([(out, None, all_rows) for out in qg.outputs])
+        queue = deque([(out, None, all_rows) for out in rg.outputs])
 
         while queue:
             node, parent_layer, rows_idx = queue.popleft()
@@ -247,7 +259,7 @@ class LearnSPN:
                 node_layer = node_layer_cache[node]
 
             else:
-                if isinstance(node, RegionNode) and not qg.region_inputs(node):
+                if isinstance(node, RegionNode) and not rg.region_inputs(node):
                     scope_vars = list(node.scope)
 
                     if len(scope_vars) == 1:
@@ -294,7 +306,7 @@ class LearnSPN:
                         node_layer_cache[node] = node_layer
 
                 elif isinstance(node, RegionNode):
-                    children = qg.region_inputs(node)
+                    children = rg.region_inputs(node)
                     arity = len(children)
 
                     feat_ids = torch.tensor(list(node.scope), dtype=torch.long, device=data.device)
@@ -313,7 +325,7 @@ class LearnSPN:
                         queue.append((child_node, node_layer, cluster_ids))
 
                 elif isinstance(node, PartitionNode):
-                    children = qg.partition_inputs(node)
+                    children = rg.partition_inputs(node)
 
                     node_layer = HadamardLayer(num_sum_units, arity=len(children))
                     layers.append(node_layer)
@@ -334,7 +346,7 @@ class LearnSPN:
                 if child_layer not in parent_list:
                     parent_list.append(child_layer)
 
-        outputs = [node_layer_cache[rgn] for rgn in qg.outputs]
+        outputs = [node_layer_cache[rgn] for rgn in rg.outputs]
         return Circuit(layers, in_layers, outputs)
 
     def _split_features_local(
@@ -515,25 +527,25 @@ class LearnSPN:
         return SumLayer(num_input_units=num_input_units, num_output_units=num_sum_units, arity=arity, weight=param)
 
 
-def _pairwise_mutual_info(x1: LongTensor, x2: LongTensor, alpha: float, num_categories: int) -> Tensor:
-    N, K = x1.shape
-    x1_flat = x1.T.contiguous()
-    x2_flat = x2.T.contiguous()
-    joint = x1_flat * num_categories + x2_flat
-    counts = torch.zeros(K, num_categories * num_categories, device=x1.device)
+def _pairwise_mutual_info(feats1: LongTensor, feats2: LongTensor, alpha: float, num_categories: int) -> Tensor:
+    num_instances, num_feats = feats1.shape
+    feats1_flat = feats1.T.contiguous()
+    feats2_flat = feats2.T.contiguous()
+    joint = feats1_flat * num_categories + feats2_flat
+    counts = torch.zeros(num_feats, num_categories * num_categories, device=feats1.device)
     counts.scatter_add_(1, joint, torch.ones_like(joint, dtype=torch.float))
-    counts = counts.view(K, num_categories, num_categories)
+    counts = counts.view(num_feats, num_categories, num_categories)
 
-    x1_counts = counts.sum(dim=2)
-    x2_counts = counts.sum(dim=1)
+    feats1_counts = counts.sum(dim=2)
+    feats2_counts = counts.sum(dim=1)
 
-    joint_probs = (counts + alpha) / (N + num_categories ** 2 * alpha)
-    x1_probs = (x1_counts + num_categories * alpha) / (N + num_categories ** 2 * alpha)
-    x2_probs = (x2_counts + num_categories * alpha) / (N + num_categories ** 2 * alpha)
+    joint_probs = (counts + alpha) / (num_instances + num_categories ** 2 * alpha)
+    feats1_probs = (feats1_counts + num_categories * alpha) / (num_instances + num_categories ** 2 * alpha)
+    feats2_probs = (feats2_counts + num_categories * alpha) / (num_instances + num_categories ** 2 * alpha)
 
-    x1_probs = x1_probs.unsqueeze(2)
-    x2_probs = x2_probs.unsqueeze(1)
-    prod = x1_probs * x2_probs
+    feats1_probs = feats1_probs.unsqueeze(2)
+    feats2_probs = feats2_probs.unsqueeze(1)
+    prod = feats1_probs * feats2_probs
 
     mi = joint_probs * (joint_probs.log() - prod.log())
     return mi.sum(dim=(1, 2))
