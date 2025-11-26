@@ -168,8 +168,7 @@ def build_quad_spn_structure(train_data, device, params):
         alpha=params["alpha"],
         noise_scale=params["noise_scale"],
         device="cuda",
-        data_format='tabular',
-        image_shape=params["image_shape"]
+        data_format='tabular'
     )
 
     data_tensor = train_data.dataset[train_data.indices].to(device)
@@ -208,7 +207,6 @@ if __name__ == "__main__":
     parser.add_argument("--override", nargs="*", help="Override config values, e.g. --override training.lr=0.001 rbt.num_sum_units=64")
     args = parser.parse_args()
 
-    # Load config
     with open(args.config, "r") as f:
         config = yaml.safe_load(f)
 
