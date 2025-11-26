@@ -11,6 +11,7 @@ from cirkit.templates.region_graph.graph import RegionGraph
 def ChowLiuTree(
     data: Tensor,
     input_type: str,
+    alpha: float = 0.01,
     root: int | None = None,
     chunk_size: int | None = None,
     num_categories: int | None = None,
@@ -51,7 +52,7 @@ def ChowLiuTree(
                 raise ValueError("Number of categories must be known if rescaling in bins")
             data = torch.div(data, num_categories // num_bins, rounding_mode="floor")
         mutual_info = _categorical_mutual_info(
-            data.long(), num_categories=num_categories, chunk_size=chunk_size
+            data.long(), alpha=alpha, num_categories=num_categories, chunk_size=chunk_size
         )
     elif input_type == "gaussian":
         # todo: implement chunked computation
