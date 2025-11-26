@@ -27,6 +27,13 @@ learn_spn:
   num_input_units: 1
   num_sum_units: 1
 
+quad_spn:
+  alpha: 0.5
+  region_graph: "quad_graph"
+  noise_scale: 5e-1
+  num_input_units: 1
+  num_sum_units: 1
+
 rbt:
   num_input_units: 32
   num_sum_units: 32
