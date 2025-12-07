@@ -122,7 +122,7 @@ class LearnSPN:
         def _make_leaf_and_attach(feat_ids: int, instance_ids: LongTensor, parent):
             if use_estimated:
                 layer = self._make_input_layer_estimated(
-                    feat_ids,
+                    int(feat_ids),
                     instance_ids,
                     data,
                     num_input_units,
