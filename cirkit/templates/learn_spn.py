@@ -114,8 +114,8 @@ class LearnSPN:
                     feat_idx=int(scope[0]),
                     instance_ids=rows_idx, 
                     data=data,
-                    num_input_units=num_input_units,
-                    num_categories=num_categories,
+                    num_input_units=layer.num_output_units,
+                    num_categories=layer.num_categories,
                     activation=activation
                 )
                 
@@ -127,8 +127,8 @@ class LearnSPN:
 
                 param = self._make_sum_param_estimated(
                     clusters=cluster,
-                    num_input_units=num_input_units,
-                    num_sum_units=(1 if layer_out is None else num_sum_units),
+                    num_input_units=layer.num_input_units,
+                    num_sum_units=(1 if layer_out is None else layer.num_output_units),
                     activation=activation
                 )
                 
