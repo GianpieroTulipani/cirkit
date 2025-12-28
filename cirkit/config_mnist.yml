@@ -1,9 +1,4 @@
-# ===============================
-# 📘 config.yaml — SPN Training Config
-# ===============================
-
 project: "mnist_spn"
-mode: "learn_spn"   # options: learn_spn | quad_spn
 
 dataset:
   name: "MNIST"
@@ -19,24 +14,15 @@ training:
   device: "cuda"
   save_path: "best_circuit.pth"
 
-learn_spn:
-  alpha: 0.5
-  min_instances: 1000
-  mi_quantile: 0.6
-  noise_scale: 0.5
-  use_miwae: false
-  num_input_units: 1
-  num_sum_units: 1
-  initialization: "estimated"
-  image_shape: [1, 28, 28]
-
 quad_spn:
   alpha: 5.0
-  noise_scale: 0.5
+  noise_scale: 2.0
   use_miwae: false
+  sum_product_layer: "cp"
+  region_graph: "quad-graph"
   num_input_units: 1
   num_sum_units: 1
   image_shape: [1, 28, 28]
 
 logging:
-  use_wandb: true
+  use_wandb: false
