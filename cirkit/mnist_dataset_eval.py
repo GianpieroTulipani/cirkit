@@ -207,8 +207,6 @@ if __name__ == "__main__":
         wandb.login()
         run = wandb.init(project=cfg["project"], config=cfg)
 
-    logger.info(f"Running mode: {cfg['mode']}")
-
     mnist_train = datasets.MNIST(root=cfg["dataset"]["root"], train=True, download=True)
     mnist_test = datasets.MNIST(root=cfg["dataset"]["root"], train=False, download=True)
 
