@@ -229,51 +229,26 @@ if __name__ == "__main__":
 
     weight_dir = os.path.join(os.getcwd(), "best_categorical_miwae.pt")
 
-    mode = cfg["mode"].lower()
-    if mode == "learn_spn":
-        params = cfg["learn_spn"]
-        spn_learner = LearnSPN(
-            alpha=params["alpha"],
-            min_instances=params["min_instances"],
-            mi_quantile=params["mi_quantile"],
-            noise_scale=params["noise_scale"],
-            use_miwae=params["use_miwae"],
-            data_format="image",
-            image_shape=tuple(params["image_shape"]),
-            device=device,
-            weight_dir=weight_dir
-        )
-        symbolic_circuit = spn_learner.learn_spn(
-            data=train_data.dataset,
-            input_layer="categorical",
-            activation="softmax",
-            initialization="estimated",
-            num_input_units=params["num_input_units"],
-            num_sum_units=params["num_sum_units"]
-        )
-
-    elif mode == "quad_spn":
-        params = cfg["quad_spn"]
-        spn_learner = LearnSPN(
-            alpha=params["alpha"],
-            noise_scale=params["noise_scale"],
-            use_miwae=params["use_miwae"],
-            data_format="image",
-            image_shape=tuple(params["image_shape"]),
-            device=device,
-            weight_dir=weight_dir
-        )
-        symbolic_circuit = spn_learner.quad_spn(
-            train_data.dataset,
-            input_layer="categorical",
-            activation="softmax",
-            initialization=params["initialization"],
-            num_input_units=params["num_input_units"],
-            num_sum_units=params["num_sum_units"]
-        )
-
-    else:
-        raise ValueError("mode must be 'learn_spn' or 'quad_spn'")
+    params = cfg["quad_spn"]
+    spn_learner = LearnSPN(
+        alpha=params["alpha"],
+        noise_scale=params["noise_scale"],
+        use_miwae=params["use_miwae"],
+        data_format="image",
+        image_shape=tuple(params["image_shape"]),
+        device=device,
+        weight_dir=weight_dir
+    )
+    symbolic_circuit = spn_learner.quad_spn(
+        train_data.dataset,
+        region_graph=params["region_graph"],
+        input_layer="categorical",
+        activation="softmax",
+        sum_product_layer=params["sum_product_layer"],
+        initialization=params["initialization"],
+        num_input_units=params["num_input_units"],
+        num_sum_units=params["num_sum_units"]
+    )
 
     logger.info(f"Circuit built with {len(list(symbolic_circuit.layers))} layers")
 
