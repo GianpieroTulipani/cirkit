@@ -243,7 +243,6 @@ if __name__ == "__main__":
         input_layer="categorical",
         activation="softmax",
         sum_product_layer=params["sum_product_layer"],
-        initialization=params["initialization"],
         num_input_units=params["num_input_units"],
         num_sum_units=params["num_sum_units"]
     )
