@@ -100,10 +100,16 @@ class LearnSPN:
         )        
 
         queue = deque([(out, all_rows) for out in sc.outputs])
+        visited = set()
         layer_count = 1
 
         while queue:
             layer, rows_idx = queue.popleft()
+
+            if layer in visited:
+                continue
+            visited.add(layer)
+            layer_count += 1
 
             layer_in = sc.layer_inputs(layer)
             layer_out = sc.layer_outputs(layer)
@@ -113,7 +119,7 @@ class LearnSPN:
                 
                 param = self._make_input_param_estimated(
                     feat_idx=int(scope[0]),
-                    instance_ids=all_rows, #rows_idx
+                    instance_ids=all_rows,
                     data=data,
                     num_input_units=layer.num_output_units,
                     num_categories=layer.num_categories,
@@ -136,12 +142,12 @@ class LearnSPN:
                 layer.weight=param
 
                 for child, cluster_ids in zip(layer_in, cluster):
-                    queue.append((child, cluster_ids))
-                    layer_count += 1
+                    if child not in visited:
+                        queue.append((child, cluster_ids))
             else:
                 for child in layer_in:
-                    queue.append((child, rows_idx))
-                    layer_count += 1
+                    if child not in visited:
+                        queue.append((child, rows_idx))
 
         print(f"Total layers processed: {layer_count}")
         return sc
