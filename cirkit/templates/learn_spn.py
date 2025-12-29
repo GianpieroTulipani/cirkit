@@ -101,7 +101,6 @@ class LearnSPN:
 
         queue = deque([(out, all_rows) for out in sc.outputs])
         visited = set()
-        layer_count = 1
 
         while queue:
             layer, rows_idx = queue.popleft()
@@ -109,7 +108,6 @@ class LearnSPN:
             if layer in visited:
                 continue
             visited.add(layer)
-            layer_count += 1
 
             layer_in = sc.layer_inputs(layer)
             layer_out = sc.layer_outputs(layer)
@@ -148,8 +146,7 @@ class LearnSPN:
                 for child in layer_in:
                     if child not in visited:
                         queue.append((child, rows_idx))
-
-        print(f"Total layers processed: {layer_count}")
+                        
         return sc
         
     def _cluster_instances(
