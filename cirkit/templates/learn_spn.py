@@ -100,6 +100,7 @@ class LearnSPN:
         )        
 
         queue = deque([(out, all_rows) for out in sc.outputs])
+        layer_count = 1
 
         while queue:
             layer, rows_idx = queue.popleft()
@@ -136,10 +137,13 @@ class LearnSPN:
 
                 for child, cluster_ids in zip(layer_in, cluster):
                     queue.append((child, cluster_ids))
+                    layer_count += 1
             else:
                 for child in layer_in:
                     queue.append((child, rows_idx))
-                
+                    layer_count += 1
+
+        print(f"Total layers processed: {layer_count}")
         return sc
         
     def _cluster_instances(
@@ -209,7 +213,13 @@ class LearnSPN:
             if self.noise_scale and self.noise_scale > 0.0:
                 logits = logits + np.random.normal(loc=0.0, scale=self.noise_scale, size=logits.shape)
 
-        tp = TensorParameter(num_input_units, num_categories, initializer=ConstantTensorInitializer(logits), learnable=True)
+        print(f'({num_input_units}, {num_categories}):{logits}')
+        tp = TensorParameter(
+            num_input_units,
+            num_categories,
+            initializer=ConstantTensorInitializer(logits),
+            learnable=True
+            )
         unary_op_factory = name_to_parameter_activation(activation)
 
         return Parameter.from_unary(unary_op_factory((num_input_units, num_categories)), tp)
@@ -238,6 +248,8 @@ class LearnSPN:
             logits = np.log(rep_weights_flat)
             if self.noise_scale and self.noise_scale > 0.0:
                 logits = logits + np.random.normal(loc=0.0, scale=self.noise_scale, size=logits.shape)
+
+        print(f'({num_input_units}, {num_sum_units}):{logits}')
 
         tp = TensorParameter(
             num_sum_units,
