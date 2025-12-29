@@ -208,7 +208,7 @@ class LearnSPN:
         if num_input_units == 1:
             logits = np.log(probs_np).reshape(1, num_categories)
         else:
-            base = np.log(probs_np)
+            base = probs_np#np.log(probs_np)
             logits = np.tile(base.reshape(1, num_categories), (num_input_units, 1))
             if self.noise_scale and self.noise_scale > 0.0:
                 logits = logits + np.random.normal(loc=0.0, scale=self.noise_scale, size=logits.shape)
@@ -245,7 +245,7 @@ class LearnSPN:
             rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, arity, 1), (1, 1, num_input_units))
             rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, arity * num_input_units)
             
-            logits = np.log(rep_weights_flat)
+            logits = rep_weights_flat#np.log(rep_weights_flat)
             if self.noise_scale and self.noise_scale > 0.0:
                 logits = logits + np.random.normal(loc=0.0, scale=self.noise_scale, size=logits.shape)
 
