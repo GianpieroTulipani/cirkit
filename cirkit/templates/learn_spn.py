@@ -146,7 +146,7 @@ class LearnSPN:
                 for child in layer_in:
                     if child not in visited:
                         queue.append((child, rows_idx))
-                        
+
         return sc
         
     def _cluster_instances(
@@ -232,7 +232,8 @@ class LearnSPN:
         num_input_units: int,
         num_sum_units: int,
         activation: str
-    ):
+    ):  
+        concentration = 50.0
         arity = len(clusters)
         cluster_sizes = [int(c.numel()) for c in clusters]
         smoothed = [sz + self.alpha for sz in cluster_sizes]
@@ -243,7 +244,8 @@ class LearnSPN:
         if num_input_units == 1:
             logits = np.log(mix_weights).reshape(1, arity)
         else:
-            rep_weights = np.tile(mix_weights.reshape(1, arity), (num_sum_units, 1))
+            #rep_weights = np.tile(mix_weights.reshape(1, arity), (num_sum_units, 1))
+            rep_weights = np.random.dirichlet(alpha=concentration * mix_weights, size=num_sum_units)
             rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, arity, 1), (1, 1, num_input_units))
             rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, arity * num_input_units)
             
