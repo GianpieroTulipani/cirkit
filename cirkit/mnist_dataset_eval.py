@@ -242,9 +242,12 @@ if __name__ == "__main__":
         region_graph=params["region_graph"],
         input_layer="categorical",
         activation="softmax",
+        weights_init=params["weights_init"],
         sum_product_layer=params["sum_product_layer"],
         num_input_units=params["num_input_units"],
-        num_sum_units=params["num_sum_units"]
+        num_sum_units=params["num_sum_units"],
+        use_mixing_weights=params["use_mixing_weights"],
+        use_estimated_weights=params["use_estimated_weights"]
     )
 
     logger.info(f"Circuit built with {len(list(symbolic_circuit.layers))} layers")
