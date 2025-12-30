@@ -14,7 +14,7 @@ training:
   device: "cuda"
   save_path: "best_circuit.pth"
 
-quad_spn:
+learn_spn:
   alpha: 5.0
   noise_scale: 2.0
   use_miwae: false
