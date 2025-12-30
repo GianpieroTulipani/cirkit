@@ -227,7 +227,7 @@ if __name__ == "__main__":
 
     weight_dir = os.path.join(os.getcwd(), "best_categorical_miwae.pt")
 
-    params = cfg["quad_spn"]
+    params = cfg["learn_spn"]
     spn_learner = LearnSPN(
         alpha=params["alpha"],
         noise_scale=params["noise_scale"],
