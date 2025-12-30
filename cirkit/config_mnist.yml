@@ -19,6 +19,7 @@ learn_spn:
   noise_scale: 2.0
   use_miwae: false
   sum_product_layer: "cp"
+  activation: "softmax"
   weights_init: "normal"
   region_graph: "quad-graph"
   num_input_units: 1
