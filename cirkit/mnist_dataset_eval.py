@@ -237,7 +237,7 @@ if __name__ == "__main__":
         device=device,
         weight_dir=weight_dir
     )
-    symbolic_circuit = spn_learner.quad_spn(
+    symbolic_circuit = spn_learner.learn_spn(
         train_data.dataset,
         region_graph=params["region_graph"],
         input_layer="categorical",
