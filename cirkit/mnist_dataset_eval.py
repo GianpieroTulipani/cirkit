@@ -241,7 +241,7 @@ if __name__ == "__main__":
         train_data.dataset,
         region_graph=params["region_graph"],
         input_layer="categorical",
-        activation="softmax",
+        activation=params["activation"],
         weights_init=params["weights_init"],
         sum_product_layer=params["sum_product_layer"],
         num_input_units=params["num_input_units"],
