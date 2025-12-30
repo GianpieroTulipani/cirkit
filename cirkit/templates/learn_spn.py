@@ -1,4 +1,5 @@
 import random
+import functools
 from collections import deque
 from typing import List, Tuple, Optional
 
@@ -11,7 +12,7 @@ from fast_pytorch_kmeans import KMeans
 from cirkit.symbolic.circuit import Circuit
 from cirkit.templates.miwae import ConvVAE
 from cirkit.symbolic.layers import SumLayer, InputLayer
-from cirkit.symbolic.parameters import TensorParameter, Parameter
+from cirkit.symbolic.parameters import TensorParameter, Parameter, ParameterFactory, mixing_weight_factory
 from cirkit.symbolic.initializers import ConstantTensorInitializer
 from cirkit.templates.utils import (
     Parameterization,
@@ -65,17 +66,23 @@ class LearnSPN:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
-    def quad_spn(
+    def learn_spn(
             self,
             data: LongTensor,
             region_graph: str='quad-graph',
             input_layer: str = 'categorical',
             activation: str = 'softmax',
+            weights_init: str = 'None',
             sum_product_layer = 'cp',
+            sum_weight_param: Optional[Parameterization] = None,
             num_input_units: int = 1,
             num_sum_units: int = 1,
-            num_classes: int = 1
+            num_classes: int = 1,
+            use_mixing_weights: bool = True,
+            use_estimated_weights:  bool = True
             ) -> Circuit:
+        
+        assert weights_init in ('normal', 'sigmoid', 'positive-clamp', 'None'), "weights_init should be one of 'normal', 'sigmoid', 'positive-clamp', 'None'"
 
         if region_graph == 'quad-graph':
             rg = QuadGraph(self.image_shape)
@@ -86,21 +93,62 @@ class LearnSPN:
         else:
             raise ValueError(f"Unknown region graph called {region_graph}")
         
+        sum_weight_factory: ParameterFactory = None
+        nary_sum_weight_factory: ParameterFactory = None
         num_categories = int(data.max().item() + 1)
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
-        all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
+
+        if weights_init == 'positive-clamp':
+            initialization_dict = {'vmin': 1e-19}
+        else:
+            initialization_dict = {}
+
+        if sum_weight_param is None:
+            sum_weight_param = Parameterization(
+                activation=activation,
+                initialization=weights_init,
+                initialization_kwargs=initialization_dict
+                )
+        sum_weight_factory = parameterization_to_factory(sum_weight_param)
+        
+        if use_mixing_weights:
+            nary_sum_weight_factory = functools.partial(
+                mixing_weight_factory,
+                param_factory=sum_weight_factory
+            )
+        else:
+            nary_sum_weight_factory = sum_weight_factory
 
         sc = rg.build_circuit(
             input_factory=input_factory,
             sum_product=sum_product_layer,
+            sum_weight_factory=sum_weight_factory,
+            nary_sum_weight_factory=nary_sum_weight_factory,
             num_input_units=num_input_units,
             num_sum_units=num_sum_units,
             num_classes=num_classes,
             factorize_multivariate=True
-        )        
+        )
 
-        queue = deque([(out, all_rows) for out in sc.outputs])
+        if use_estimated_weights:
+            sc = self._estimate_parameters(
+                sc,
+                data,
+                activation=activation
+            )
+
+        return sc
+    
+    def _estimate_parameters(
+            self,
+            sc: Circuit,
+            data: LongTensor,
+            activation: str
+            ) -> Circuit:
+        
         visited = set()
+        all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
+        queue = deque([(out, all_rows) for out in sc.outputs])
 
         while queue:
             layer, rows_idx = queue.popleft()

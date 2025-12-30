@@ -19,9 +19,12 @@ quad_spn:
   noise_scale: 2.0
   use_miwae: false
   sum_product_layer: "cp"
+  weights_init: "normal"
   region_graph: "quad-graph"
   num_input_units: 1
   num_sum_units: 1
+  use_estimated_weights: true
+  use_mixing_weights: false
   image_shape: [1, 28, 28]
 
 logging:
