@@ -133,10 +133,10 @@ def train_circuit(
                     })
 
                 if avg_val_nll < best_val_nll - delta:
-                    best_val_nll = avg_val_nll
+                    best_val_nll = avg_val_nll 
                     torch.save(circuit.state_dict(), save_path)
                     epochs_no_improve = 0
-                    logger.success(f"New best model at step {total_steps}, Val NLL: {best_val_nll:.4f}")
+                    logger.success(f"New best model at step {total_steps}, Val NLL: {best_val_nll:.4f} Val bpd: {bpd_val:.4f}")
                 else:
                     epochs_no_improve += 1
                     logger.info(f"No improvement at step {total_steps}, count: {epochs_no_improve}/{patience}")
