@@ -11,7 +11,8 @@ from loguru import logger
 import matplotlib.pyplot as plt
 import torch.optim as optim
 
-from cirkit.pipeline import compile
+from cirkit.pipeline import PipelineContext, compile
+import cirkit.symbolic.functional as sf
 from cirkit.templates.learn_spn import LearnSPN
 import argparse
 
@@ -46,6 +47,7 @@ def set_nested_key(d, key_path, value):
 
 def train_circuit(
     symbolic_circuit,
+    symbolic_partition_function,
     train_loader,
     val_loader,
     num_epochs,
@@ -55,7 +57,17 @@ def train_circuit(
     save_path,
     log_to_wandb=True
 ):
-    circuit = compile(symbolic_circuit).to(device)
+    ctx = PipelineContext(
+        backend="torch",
+        semiring='lse-sum',
+        fold=True,
+        optimize=True
+    )
+
+    with ctx:
+        circuit = compile(symbolic_circuit).to(device)
+        circuit_partition_function = compile(symbolic_partition_function).to(device)
+
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     best_val_nll = float("inf")
 
@@ -73,7 +85,9 @@ def train_circuit(
         train_count = 0
         for batch in tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False):
             batch = batch.to(device)
-            log_liks = circuit(batch)
+            log_scores = circuit(batch)
+            log_part_func = circuit_partition_function()
+            log_liks = log_scores - log_part_func
             loss = -log_liks.mean()
             optimizer.zero_grad()
             loss.backward()
@@ -201,7 +215,6 @@ if __name__ == "__main__":
 
     device = torch.device(cfg["training"]["device"] if torch.cuda.is_available() else "cpu")
 
-    # Optional logging
     use_wandb = cfg["logging"].get("use_wandb", False)
     if use_wandb:
         wandb.login()
@@ -239,8 +252,8 @@ if __name__ == "__main__":
     )
     symbolic_circuit = spn_learner.learn_spn(
         train_data.dataset,
-        region_graph=params["region_graph"],
         input_layer="categorical",
+        region_graph=params["region_graph"],
         activation=params["activation"],
         weights_init=params["weights_init"],
         sum_product_layer=params["sum_product_layer"],
@@ -250,6 +263,8 @@ if __name__ == "__main__":
         use_estimated_weights=params["use_estimated_weights"]
     )
 
+    symbolic_partition_function = sf.integrate(symbolic_circuit)
+
     logger.info(f"Circuit built with {len(list(symbolic_circuit.layers))} layers")
 
     torch.cuda.empty_cache()
@@ -257,6 +272,7 @@ if __name__ == "__main__":
 
     circuit, _ = train_circuit(
         symbolic_circuit,
+        symbolic_partition_function,
         train_loader,
         val_loader,
         num_epochs=cfg["training"]["epochs"],
