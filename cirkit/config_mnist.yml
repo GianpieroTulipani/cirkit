@@ -14,6 +14,7 @@ training:
   validation_steps: 250
   delta: 0.0
   patience: 5
+  device: "cuda"
   save_path: "best_circuit.pth"
 
 learn_spn:
