@@ -72,7 +72,7 @@ class LearnSPN:
             region_graph: str='quad-graph',
             input_layer: str = 'categorical',
             activation: str = 'softmax',
-            weights_init: str = 'None',
+            weights_init: str = 'normal',
             sum_product_layer = 'cp',
             sum_weight_param: Optional[Parameterization] = None,
             num_input_units: int = 1,
@@ -82,7 +82,7 @@ class LearnSPN:
             use_estimated_weights:  bool = True
             ) -> Circuit:
         
-        assert weights_init in ('normal', 'sigmoid', 'positive-clamp', 'None'), "weights_init should be one of 'normal', 'sigmoid', 'positive-clamp', 'None'"
+        assert weights_init in ('normal', 'None'), "weights_init should be 'normal' or 'None'"
 
         if region_graph == 'quad-graph':
             rg = QuadGraph(self.image_shape)
@@ -98,16 +98,16 @@ class LearnSPN:
         num_categories = int(data.max().item() + 1)
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
-        if weights_init == 'positive-clamp':
-            initialization_dict = {'vmin': 1e-19}
+        if activation == 'positive-clamp':
+            activation_dict = {'vmin': 1e-19}
         else:
-            initialization_dict = {}
+            activation_dict = {}
 
         if sum_weight_param is None:
             sum_weight_param = Parameterization(
                 activation=activation,
                 initialization=weights_init,
-                initialization_kwargs=initialization_dict
+                activation_kwargs=activation_dict
                 )
         sum_weight_factory = parameterization_to_factory(sum_weight_param)
         
