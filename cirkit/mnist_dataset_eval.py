@@ -173,17 +173,27 @@ def train_circuit(
         except Exception as e:
             logger.error(f"Failed to log learning curve to wandb: {e}")
         plt.close(fig)
-    return circuit, logs
+    return circuit, circuit_partition_function, logs
 
 
-def evaluate_circuit(circuit, test_loader, device, checkpoint_path, log_to_wandb=True):
+def evaluate_circuit(
+        circuit,
+        circuit_partition_function,
+        test_loader,
+        device,
+        checkpoint_path,
+        log_to_wandb=True
+        ):
+    
     circuit.load_state_dict(torch.load(checkpoint_path, map_location=device))
     circuit.eval()
     test_nll_sum = 0.0
     test_count = 0
     for batch in tqdm(test_loader, desc="[Test]", leave=False):
         batch = batch.to(device)
-        log_liks = circuit(batch)
+        log_scores = circuit(batch)
+        log_part_func = circuit_partition_function()
+        log_liks = log_scores - log_part_func
         loss = -log_liks.mean()
         test_nll_sum += loss.item() * batch.size(0)
         test_count += batch.size(0)
@@ -272,7 +282,7 @@ if __name__ == "__main__":
     torch.cuda.empty_cache()
     gc.collect()
 
-    circuit, _ = train_circuit(
+    circuit, circuit_partition_function, _ = train_circuit(
         symbolic_circuit,
         symbolic_partition_function,
         train_loader,
@@ -287,6 +297,7 @@ if __name__ == "__main__":
 
     evaluate_circuit(
         circuit,
+        circuit_partition_function,
         test_loader,
         device=device,
         checkpoint_path=cfg["training"]["save_path"],
