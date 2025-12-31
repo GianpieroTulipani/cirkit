@@ -5,13 +5,15 @@ dataset:
   root: "datasets"
   n_train: 50000
   n_val: 10000
-  batch_size: 64
+  batch_size: 256
 
 training:
   lr: 0.01
   epochs: 10
-  weight_decay: 0.000001
-  device: "cuda"
+  weight_decay: 0.0
+  validation_steps: 250
+  delta: 0.0
+  patience: 5
   save_path: "best_circuit.pth"
 
 learn_spn:
