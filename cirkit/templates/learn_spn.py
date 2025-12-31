@@ -93,15 +93,13 @@ class LearnSPN:
         else:
             raise ValueError(f"Unknown region graph called {region_graph}")
         
-        sum_weight_factory: ParameterFactory = None
-        nary_sum_weight_factory: ParameterFactory = None
+        activation_dict = {}
+        nary_sum_weight_factory: ParameterFactory
         num_categories = int(data.max().item() + 1)
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
         if activation == 'positive-clamp':
-            activation_dict = {'vmin': 1e-19}
-        else:
-            activation_dict = {}
+            activation_dict['vmin'] = 1e-19 
 
         if sum_weight_param is None:
             sum_weight_param = Parameterization(
@@ -273,8 +271,9 @@ class LearnSPN:
             learnable=True
             )
         
+        activation_dict = {}
         if activation == 'positive-clamp':
-            activation_dict = {'vmin': 1e-19}
+            activation_dict['vmin'] = 1e-19
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
 
@@ -313,9 +312,9 @@ class LearnSPN:
             initializer=ConstantTensorInitializer(logits),
             learnable=True
         )
-
+        activation_dict = {}
         if activation == 'positive-clamp':
-            activation_dict = {'vmin': 1e-19}
+            activation_dict['vmin'] = 1e-19
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
 
