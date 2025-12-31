@@ -50,11 +50,14 @@ def train_circuit(
     symbolic_partition_function,
     train_loader,
     val_loader,
-    num_epochs,
+    max_epochs,
     lr,
     weight_decay,
     device,
     save_path,
+    validation_steps,
+    delta,
+    patience,
     log_to_wandb=True
 ):
     ctx = PipelineContext(
@@ -69,110 +72,81 @@ def train_circuit(
         circuit_partition_function = compile(symbolic_partition_function).to(device)
 
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
+
     best_val_nll = float("inf")
+    epochs_no_improve = 0
+    total_steps = 0
 
-    epoch_list = []
-    train_nll_list = []
-    val_nll_list = []
-    train_bpd_list = []
-    val_bpd_list = []
+    logs = {"step": [], "train_nll": [], "val_nll": [], "train_bpd": [], "val_bpd": []}
 
-    logs = {"epoch": [], "train_nll": [], "val_nll": [], "train_bpd": [], "val_bpd": []}
-
-    for epoch in range(1, num_epochs + 1):
+    for epoch in range(1, max_epochs + 1):
         circuit.train()
         train_loss_sum = 0.0
         train_count = 0
+
         for batch in tqdm(train_loader, desc=f"Epoch {epoch} [Train]", leave=False):
             batch = batch.to(device)
             log_scores = circuit(batch)
             log_part_func = circuit_partition_function()
             log_liks = log_scores - log_part_func
             loss = -log_liks.mean()
+            
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
             train_loss_sum += loss.item() * batch.size(0)
             train_count += batch.size(0)
-        avg_train_nll = train_loss_sum / train_count
-        bpd_train = avg_train_nll / (28 * 28 * np.log(2.0))
-        logger.info(f"Epoch {epoch} — Train NLL: {avg_train_nll:.4f} | bpd: {bpd_train:.4f}")
+            total_steps += 1
 
-        circuit.eval()
-        val_loss_sum = 0.0
-        val_count = 0
-        with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False):
-                batch = batch.to(device)
-                log_scores = circuit(batch)
-                log_part_func = circuit_partition_function()
-                log_liks = log_scores - log_part_func
-                loss = -log_liks.mean()
-                val_loss_sum += loss.item() * batch.size(0)
-                val_count += batch.size(0)
-        avg_val_nll = val_loss_sum / val_count
-        bpd_val = avg_val_nll / (28 * 28 * np.log(2.0))
-        logger.info(f"Epoch {epoch} — Val NLL: {avg_val_nll:.4f} | bpd: {bpd_val:.4f}")
+            # Validate every `validation_steps`
+            if total_steps % validation_steps == 0:
+                circuit.eval()
+                val_loss_sum = 0.0
+                val_count = 0
+                with torch.no_grad():
+                    for val_batch in val_loader:
+                        val_batch = val_batch.to(device)
+                        log_scores = circuit(val_batch)
+                        log_part_func = circuit_partition_function()
+                        log_liks = log_scores - log_part_func
+                        val_loss_sum += (-log_liks.mean()).item() * val_batch.size(0)
+                        val_count += val_batch.size(0)
+                avg_val_nll = val_loss_sum / val_count
+                avg_train_nll = train_loss_sum / train_count
+                bpd_train = avg_train_nll / (28 * 28 * np.log(2.0))
+                bpd_val = avg_val_nll / (28 * 28 * np.log(2.0))
 
-        epoch_list.append(epoch)
-        train_nll_list.append(avg_train_nll)
-        val_nll_list.append(avg_val_nll)
-        train_bpd_list.append(bpd_train)
-        val_bpd_list.append(bpd_val)
+                logs["step"].append(total_steps)
+                logs["train_nll"].append(avg_train_nll)
+                logs["val_nll"].append(avg_val_nll)
+                logs["train_bpd"].append(bpd_train)
+                logs["val_bpd"].append(bpd_val)
 
-        logs["epoch"].append(epoch)
-        logs["train_nll"].append(avg_train_nll)
-        logs["val_nll"].append(avg_val_nll)
-        logs["train_bpd"].append(bpd_train)
-        logs["val_bpd"].append(bpd_val)
+                if log_to_wandb:
+                    wandb.log({
+                        "step": total_steps,
+                        "train_nll": avg_train_nll,
+                        "train_bpd": bpd_train,
+                        "val_nll": avg_val_nll,
+                        "val_bpd": bpd_val
+                    })
 
-        if log_to_wandb:
-            wandb.log({
-                "epoch": epoch,
-                "train_nll": avg_train_nll,
-                "train_bpd": bpd_train,
-                "val_nll": avg_val_nll,
-                "val_bpd": bpd_val
-            })
+                if avg_val_nll < best_val_nll - delta:
+                    best_val_nll = avg_val_nll
+                    torch.save(circuit.state_dict(), save_path)
+                    epochs_no_improve = 0
+                    logger.success(f"New best model at step {total_steps}, Val NLL: {best_val_nll:.4f}")
+                else:
+                    epochs_no_improve += 1
+                    logger.info(f"No improvement at step {total_steps}, count: {epochs_no_improve}/{patience}")
 
-        if avg_val_nll < best_val_nll:
-            best_val_nll = avg_val_nll
-            torch.save(circuit.state_dict(), save_path)
-            logger.success(f"New best model at epoch {epoch}, Val NLL: {best_val_nll:.4f}")
+                if epochs_no_improve >= patience:
+                    logger.info("Early stopping triggered.")
+                    return circuit, circuit_partition_function, logs
 
-    if log_to_wandb:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    
-        ax = axes[0]
-        ax.scatter(epoch_list, train_nll_list, label='Train NLL', marker='o')
-        ax.plot(epoch_list, train_nll_list, linestyle='-', alpha=0.6)
-        ax.scatter(epoch_list, val_nll_list, label='Val NLL', marker='x')
-        ax.plot(epoch_list, val_nll_list, linestyle='--', alpha=0.6)
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('NLL')
-        ax.set_title('NLL per Epoch')
-        ax.grid(True)
-        ax.legend()
-    
-        ax = axes[1]
-        ax.scatter(epoch_list, train_bpd_list, label='Train bpd', marker='o')
-        ax.plot(epoch_list, train_bpd_list, linestyle='-', alpha=0.6)
-        ax.scatter(epoch_list, val_bpd_list, label='Val bpd', marker='x')
-        ax.plot(epoch_list, val_bpd_list, linestyle='--', alpha=0.6)
-        ax.set_xlabel('Epoch')
-        ax.set_ylabel('bpd')
-        ax.set_title('bits-per-dimension (bpd) per Epoch')
-        ax.grid(True)
-        ax.legend()
-    
-        plt.tight_layout()
-        fig_path = 'learning_curve.png'
-        fig.savefig(fig_path, dpi=150)
-        try:
-            wandb.log({"learning_curve": wandb.Image(fig_path)})
-        except Exception as e:
-            logger.error(f"Failed to log learning curve to wandb: {e}")
-        plt.close(fig)
+                circuit.train()
+
     return circuit, circuit_partition_function, logs
 
 
@@ -290,6 +264,9 @@ if __name__ == "__main__":
         num_epochs=cfg["training"]["epochs"],
         lr=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
+        validation_steps=cfg["training"]["validation_steps"],
+        delta=cfg["training"]["delta"],
+        patience=cfg["training"]["patience"],
         device=device,
         save_path=cfg["training"]["save_path"],
         log_to_wandb=use_wandb
