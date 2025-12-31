@@ -90,7 +90,7 @@ def train_circuit(
             log_part_func = circuit_partition_function()
             log_liks = log_scores - log_part_func
             loss = -log_liks.mean()
-            
+
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -261,7 +261,7 @@ if __name__ == "__main__":
         symbolic_partition_function,
         train_loader,
         val_loader,
-        num_epochs=cfg["training"]["epochs"],
+        max_epochs=cfg["training"]["epochs"],
         lr=cfg["training"]["lr"],
         weight_decay=cfg["training"]["weight_decay"],
         validation_steps=cfg["training"]["validation_steps"],
