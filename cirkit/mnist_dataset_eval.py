@@ -104,7 +104,9 @@ def train_circuit(
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch} [Val]", leave=False):
                 batch = batch.to(device)
-                log_liks = circuit(batch)
+                log_scores = circuit(batch)
+                log_part_func = circuit_partition_function()
+                log_liks = log_scores - log_part_func
                 loss = -log_liks.mean()
                 val_loss_sum += loss.item() * batch.size(0)
                 val_count += batch.size(0)
