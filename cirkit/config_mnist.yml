@@ -9,7 +9,7 @@ dataset:
 
 training:
   lr: 0.01
-  epochs: 10
+  epochs: 200
   weight_decay: 0.0
   validation_steps: 250
   delta: 0.0
