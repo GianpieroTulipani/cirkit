@@ -12,7 +12,7 @@ from fast_pytorch_kmeans import KMeans
 from cirkit.symbolic.circuit import Circuit
 from cirkit.templates.miwae import ConvVAE
 from cirkit.symbolic.layers import SumLayer, InputLayer
-from cirkit.symbolic.parameters import TensorParameter, Parameter, ParameterFactory, mixing_weight_factory
+from cirkit.symbolic.parameters import TensorParameter, Parameter, ParameterFactory, MixingWeightParameter, mixing_weight_factory
 from cirkit.symbolic.initializers import ConstantTensorInitializer
 from cirkit.templates.utils import (
     Parameterization,
@@ -32,12 +32,14 @@ class LearnSPN:
         use_miwae: bool = False,
         weight_dir: str = None,
         device: Optional[torch.device] = None,
-        data_format: str = None
+        data_format: str = None,
+        use_mixing_weights: bool = True
     ):
         
         assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
     
         self.alpha = alpha
+        self.use_mixing_weights = use_mixing_weights
         self.use_miwae = use_miwae
         self.noise_scale = noise_scale
         self.image_shape = image_shape
@@ -78,7 +80,6 @@ class LearnSPN:
             num_input_units: int = 1,
             num_sum_units: int = 1,
             num_classes: int = 1,
-            use_mixing_weights: bool = True,
             use_estimated_weights:  bool = True
             ) -> Circuit:
         
@@ -109,7 +110,7 @@ class LearnSPN:
                 )
         sum_weight_factory = parameterization_to_factory(sum_weight_param)
         
-        if use_mixing_weights:
+        if self.use_mixing_weights:
             nary_sum_weight_factory = functools.partial(
                 mixing_weight_factory,
                 param_factory=sum_weight_factory
@@ -274,7 +275,7 @@ class LearnSPN:
             activation_dict['vmin'] = 1e-19
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
-
+  
         return Parameter.from_unary(unary_op_factory((num_input_units, num_categories)), tp)
 
     def _make_sum_param_estimated(
@@ -314,4 +315,11 @@ class LearnSPN:
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
 
-        return Parameter.from_unary(unary_op_factory((num_sum_units, arity * num_input_units)), tp)
+        mixing_weights_shape = num_sum_units, arity
+        parameter_factory = Parameter.from_unary(unary_op_factory((num_sum_units, arity * num_input_units)), tp)
+
+        if self.use_mixing_weights:
+            return Parameter.from_unary(
+                MixingWeightParameter(mixing_weights_shape), parameter_factory)
+        else:
+            return parameter_factory
