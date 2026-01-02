@@ -318,7 +318,7 @@ class LearnSPN:
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
 
-        mixing_weights_shape = num_sum_units, arity
+        mixing_weights_shape = num_sum_units, arity * num_input_units
         parameter_factory = Parameter.from_unary(unary_op_factory((num_sum_units, arity * num_input_units)), tp)
 
         if use_mixing_weights:
