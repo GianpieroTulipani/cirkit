@@ -314,6 +314,6 @@ class LearnSPN:
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
 
-        parameter_factory = Parameter.from_unary(unary_op_factory((num_sum_units, arity * num_input_units)), tp)
+        parameter_factory = Parameter.from_unary(unary_op_factory((num_sum_units, num_input_units, arity)), tp)
         
         return parameter_factory
