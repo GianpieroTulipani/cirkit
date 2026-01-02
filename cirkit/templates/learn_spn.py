@@ -132,8 +132,7 @@ class LearnSPN:
             sc = self._estimate_parameters(
                 sc,
                 data,
-                activation=activation,
-                use_mixing_weights=use_mixing_weights
+                activation=activation
             )
 
         return sc
@@ -142,8 +141,7 @@ class LearnSPN:
             self,
             sc: Circuit,
             data: LongTensor,
-            activation: str,
-            use_mixing_weights: bool
+            activation: str
             ) -> Circuit:
         
         visited = set()
@@ -182,8 +180,7 @@ class LearnSPN:
                     clusters=cluster,
                     num_input_units=layer.num_input_units,
                     num_sum_units=(1 if layer_out is None else layer.num_output_units),
-                    activation=activation,
-                    use_mixing_weights=use_mixing_weights
+                    activation=activation
                 )
                 
                 layer.weight=param
@@ -285,8 +282,7 @@ class LearnSPN:
         clusters: List[LongTensor],
         num_input_units: int,
         num_sum_units: int,
-        activation: str,
-        use_mixing_weights: bool
+        activation: str
     ):  
         arity = len(clusters)
         cluster_sizes = [int(c.numel()) for c in clusters]
@@ -318,11 +314,6 @@ class LearnSPN:
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
 
-        mixing_weights_shape = num_sum_units, arity * num_input_units
         parameter_factory = Parameter.from_unary(unary_op_factory((num_sum_units, arity * num_input_units)), tp)
-
-        if use_mixing_weights:
-            return Parameter.from_unary(
-                MixingWeightParameter(mixing_weights_shape), parameter_factory)
-        else:
-            return parameter_factory
+        
+        return parameter_factory
