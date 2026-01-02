@@ -32,14 +32,12 @@ class LearnSPN:
         use_miwae: bool = False,
         weight_dir: str = None,
         device: Optional[torch.device] = None,
-        data_format: str = None,
-        use_mixing_weights: bool = True
+        data_format: str = None
     ):
         
         assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
     
         self.alpha = alpha
-        self.use_mixing_weights = use_mixing_weights
         self.use_miwae = use_miwae
         self.noise_scale = noise_scale
         self.image_shape = image_shape
@@ -80,7 +78,8 @@ class LearnSPN:
             num_input_units: int = 1,
             num_sum_units: int = 1,
             num_classes: int = 1,
-            use_estimated_weights:  bool = True
+            use_estimated_weights:  bool = True,
+            use_mixing_weights: bool = True
             ) -> Circuit:
         
         assert weights_init in ('normal', 'None'), "weights_init should be 'normal' or 'None'"
@@ -110,7 +109,7 @@ class LearnSPN:
                 )
         sum_weight_factory = parameterization_to_factory(sum_weight_param)
         
-        if self.use_mixing_weights:
+        if use_mixing_weights:
             nary_sum_weight_factory = functools.partial(
                 mixing_weight_factory,
                 param_factory=sum_weight_factory
@@ -133,7 +132,8 @@ class LearnSPN:
             sc = self._estimate_parameters(
                 sc,
                 data,
-                activation=activation
+                activation=activation,
+                use_mixing_weights=use_mixing_weights
             )
 
         return sc
@@ -142,7 +142,8 @@ class LearnSPN:
             self,
             sc: Circuit,
             data: LongTensor,
-            activation: str
+            activation: str,
+            use_mixing_weights: bool
             ) -> Circuit:
         
         visited = set()
@@ -181,7 +182,8 @@ class LearnSPN:
                     clusters=cluster,
                     num_input_units=layer.num_input_units,
                     num_sum_units=(1 if layer_out is None else layer.num_output_units),
-                    activation=activation
+                    activation=activation,
+                    use_mixing_weights=use_mixing_weights
                 )
                 
                 layer.weight=param
@@ -283,7 +285,8 @@ class LearnSPN:
         clusters: List[LongTensor],
         num_input_units: int,
         num_sum_units: int,
-        activation: str
+        activation: str,
+        use_mixing_weights: bool
     ):  
         arity = len(clusters)
         cluster_sizes = [int(c.numel()) for c in clusters]
@@ -318,7 +321,7 @@ class LearnSPN:
         mixing_weights_shape = num_sum_units, arity
         parameter_factory = Parameter.from_unary(unary_op_factory((num_sum_units, arity * num_input_units)), tp)
 
-        if self.use_mixing_weights:
+        if use_mixing_weights:
             return Parameter.from_unary(
                 MixingWeightParameter(mixing_weights_shape), parameter_factory)
         else:
