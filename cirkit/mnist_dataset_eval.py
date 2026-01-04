@@ -86,7 +86,7 @@ def train_circuit(
         train_loss_sum = 0.0
         train_count = 0
 
-        for batch in train_loader:
+        for batch in tqdm(train_loader, desc="[Train]", leave=False):
             batch = batch.to(device)
             log_scores = circuit(batch)
             log_part_func = circuit_partition_function()
