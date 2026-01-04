@@ -99,7 +99,7 @@ class LearnSPN:
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
         if activation == 'positive-clamp':
-            activation_dict['vmin'] = 1e-19 
+            activation_dict['vmin'] = np.sqrt(torch.finfo(torch.get_default_dtype()).tiny) 
 
         if sum_weight_param is None:
             sum_weight_param = Parameterization(
