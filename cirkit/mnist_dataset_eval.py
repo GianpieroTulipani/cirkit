@@ -222,11 +222,9 @@ if __name__ == "__main__":
         generator=torch.Generator().manual_seed(42)
     )
 
-    num_workers = os.cpu_count()
-
-    train_loader = DataLoader(train_data, batch_size=cfg["dataset"]["batch_size"], shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val_data, batch_size=cfg["dataset"]["batch_size"], shuffle=False, num_workers=num_workers)
-    test_loader = DataLoader(X_test, batch_size=cfg["dataset"]["batch_size"], shuffle=False, num_workers=num_workers)
+    train_loader = DataLoader(train_data, batch_size=cfg["dataset"]["batch_size"], shuffle=True)
+    val_loader = DataLoader(val_data, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
+    test_loader = DataLoader(X_test, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
 
     weight_dir = os.path.join(os.getcwd(), "best_categorical_miwae.pt")
 
