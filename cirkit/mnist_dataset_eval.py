@@ -94,18 +94,13 @@ def train_circuit(
 
         for batch in tqdm(train_loader, desc="[Train]", leave=False):
             batch = batch.to(device)
+
+            log_liks = circuit(batch) - Z
+            loss = -log_liks.mean()
+
             optimizer.zero_grad()
-            with autocast():
-                log_liks = circuit(batch) - Z
-                loss = -log_liks.mean()
-
-            scaler.scale(loss).backward()
-
-            torch.nn.utils.clip_grad_norm_(circuit.parameters(), 1.0)
-
-            #optimizer.step()
-            scaler.step(optimizer)
-            scaler.update()
+            loss.backward()
+            optimizer.step()
             scheduler.step()
 
             train_loss_sum += loss.item() * batch.size(0)
@@ -161,10 +156,6 @@ def train_circuit(
                 if epochs_no_improve >= patience:
                     logger.info("Early stopping triggered.")
                     return circuit, circuit_partition_function, logs
-                
-                if total_steps % 500 == 0:
-                    torch.cuda.empty_cache()
-                    gc.collect()
                 
                 circuit.train()
                 
