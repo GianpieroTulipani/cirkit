@@ -185,9 +185,30 @@ def main():
         num_workers=os.cpu_count(),
         pin_memory=True
         )
+    learn_cfg = cfg["learn_spn"]
 
-    spn = LearnSPN(**cfg["learn_spn"], device=device)
-    symbolic_circuit = spn.learn_spn(train_data.dataset, input_layer="categorical")
+    spn = LearnSPN(
+        alpha=learn_cfg.get("alpha", 0.5),
+        image_shape=tuple(learn_cfg.get("image_shape", [1, 28, 28])),
+        seed=learn_cfg.get("seed", 42),
+        noise_scale=learn_cfg.get("noise_scale", 1e-1),
+        use_miwae=learn_cfg.get("use_miwae", False),
+        device=device,
+        data_format="image" 
+    )
+
+    symbolic_circuit = spn.learn_spn(
+        train_data.dataset,
+        region_graph=learn_cfg.get("region_graph", "quad-graph"),
+        input_layer="categorical",
+        activation=learn_cfg.get("activation", "softmax"),
+        weights_init=learn_cfg.get("weights_init", "normal"),
+        sum_product_layer=learn_cfg.get("sum_product_layer", "cp"),
+        num_input_units=learn_cfg.get("num_input_units", 1),
+        num_sum_units=learn_cfg.get("num_sum_units", 1),
+        use_estimated_weights=learn_cfg.get("use_estimated_weights", True),
+        use_mixing_weights=learn_cfg.get("use_mixing_weights", True)
+    )
     symbolic_partition_function = sf.integrate(symbolic_circuit)
 
     circuit, Z = train_circuit(symbolic_circuit, symbolic_partition_function, train_loader, val_loader, cfg, device)
