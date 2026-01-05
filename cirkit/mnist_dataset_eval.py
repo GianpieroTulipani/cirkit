@@ -8,215 +8,310 @@ from tqdm.auto import tqdm
 from torchvision import datasets
 from torch.utils.data import DataLoader
 from loguru import logger
+import matplotlib.pyplot as plt
 import torch.optim as optim
-import argparse
 
-from cirkit.pipeline import PipelineContext
+from cirkit.pipeline import PipelineContext, compile
 import cirkit.symbolic.functional as sf
 from cirkit.templates.learn_spn import LearnSPN
+import argparse
 
 def set_nested_key(d, key_path, value):
+    """
+    Safely updates a nested dictionary given a dotted key path.
+    Example:
+      set_nested_key(cfg, 'training.lr', 0.001)
+    """
     keys = key_path.split('.')
     sub_dict = d
     for k in keys[:-1]:
-        sub_dict = sub_dict.setdefault(k, {})
-    try:
-        value = eval(value)
-    except:
-        pass
+        if k not in sub_dict or not isinstance(sub_dict[k], dict):
+            sub_dict[k] = {}
+        sub_dict = sub_dict[k]
+
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"true", "false"}:
+            value = v == "true"
+        else:
+            try:
+                if '.' in v or 'e' in v:  # handles floats like 1e-3
+                    value = float(v)
+                else:
+                    value = int(v)
+            except ValueError:
+                value = value  # leave as string if conversion fails
+
     sub_dict[keys[-1]] = value
+
 
 def train_circuit(
     symbolic_circuit,
     symbolic_partition_function,
     train_loader,
     val_loader,
-    cfg,
-    device
+    max_train_steps,
+    lr,
+    T_0,
+    eta_min,
+    weight_decay,
+    device,
+    save_path,
+    validation_steps,
+    delta,
+    patience,
+    log_to_wandb=True
 ):
-
-    ctx = PipelineContext(backend="torch", semiring='lse-sum', fold=True, optimize=True)
-    circuit = ctx.compile(symbolic_circuit).to(device)
-    Z_module = ctx.compile(symbolic_partition_function).to(device)
-
-    optimizer = optim.Adam(circuit.parameters(), lr=cfg["training"]["lr"], weight_decay=cfg["training"]["weight_decay"])
-    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-        optimizer,
-        T_0=cfg["training"]["T_0"],
-        eta_min=cfg["training"]["eta_min"]
+    ctx = PipelineContext(
+        backend="torch",
+        semiring='lse-sum',
+        fold=True,
+        optimize=True
     )
 
-    scaler = torch.cuda.amp.GradScaler(enabled=(device.type == "cuda"))
+    circuit = ctx.compile(symbolic_circuit).to(device)
+    circuit_partition_function = ctx.compile(symbolic_partition_function).to(device)
 
-    # Precompute partition function once
-    with torch.inference_mode():
-        Z = Z_module()
+    with torch.no_grad():
+        Z = circuit_partition_function()
+
+    optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=1, eta_min=eta_min)
 
     best_val_nll = float("inf")
-    patience_count = 0
+    epochs_no_improve = 0
     total_steps = 0
-    max_steps = int(len(train_loader) * cfg["training"]["epochs"])
 
-    logger.info(f"Training for {max_steps} steps")
-
-    for epoch in range(cfg["training"]["epochs"]):
+    logs = {"step": [], "train_nll": [], "val_nll": [], "train_bpd": [], "val_bpd": []}
+    print(f'Starting training for a maximum of {max_train_steps} steps.\n')
+    while total_steps < max_train_steps:
+        train_loss_sum = 0.0
+        train_count = 0
         circuit.train()
 
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}", leave=False):
-            batch = batch.to(device, non_blocking=True)
+        for batch in tqdm(train_loader, desc="[Train]", leave=False):
+            batch = batch.to(device)
+            log_liks = circuit(batch) - Z
+            loss = -log_liks.mean()
 
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad()
+            loss.backward()
 
-            with torch.cuda.amp.autocast(enabled=(device.type == "cuda")):
-                log_liks = circuit(batch) - Z
-                loss = -log_liks.mean()
-
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            torch.nn.utils.clip_grad_norm_(circuit.parameters(), 1.0)
+            
+            optimizer.step()
             scheduler.step()
 
+            del batch, loss, log_liks
+
+            train_loss_sum += loss.item() * batch.size(0)
+            train_count += batch.size(0)
             total_steps += 1
+            
+            if total_steps % validation_steps == 0:
+                val_loss_sum = 0.0
+                val_count = 0
+                circuit.eval()
 
-            del batch, log_liks, loss
+                with torch.inference_mode():
+                    for val_batch in val_loader:
+                        val_batch = val_batch.to(device)
+                        log_liks = circuit(val_batch) - Z
+                        val_loss_sum += (-log_liks.mean()).item() * val_batch.size(0)
+                        val_count += val_batch.size(0)
 
-            if total_steps % cfg["training"]["validation_steps"] == 0:
-                val_nll = validate(circuit, Z, val_loader, device)
-                if val_nll < best_val_nll - cfg["training"]["delta"]:
-                    best_val_nll = val_nll
-                    patience_count = 0
-                    torch.save(circuit.state_dict(), cfg["training"]["save_path"])
-                    logger.success(f"New best: {val_nll:.4f}")
+                        del val_batch, log_liks
+
+                avg_val_nll = val_loss_sum / val_count
+                avg_train_nll = train_loss_sum / train_count
+                bpd_train = avg_train_nll / (28 * 28 * np.log(2.0))
+                bpd_val = avg_val_nll / (28 * 28 * np.log(2.0))
+
+
+                logs["step"].append(total_steps)
+                logs["train_nll"].append(avg_train_nll)
+                logs["val_nll"].append(avg_val_nll)
+                logs["train_bpd"].append(bpd_train)
+                logs["val_bpd"].append(bpd_val)
+
+                if log_to_wandb:
+                    wandb.log({
+                        "step": total_steps,
+                        "train_nll": avg_train_nll,
+                        "train_bpd": bpd_train,
+                        "val_nll": avg_val_nll,
+                        "val_bpd": bpd_val
+                    })
+
+                if avg_val_nll - delta <= best_val_nll:
+                    best_val_nll = avg_val_nll 
+                    torch.save(circuit.state_dict(), save_path)
+                    epochs_no_improve = 0
+                    logger.success(f"New best model at step {total_steps}, Train NLL: {avg_train_nll:.4f}, Train bpd: {bpd_train:.4f}, Val NLL: {best_val_nll:.4f}, Val bpd: {bpd_val:.4f}")
                 else:
-                    patience_count += 1
-                    logger.info(f"No improvement: {patience_count}/{cfg['training']['patience']}")
+                    epochs_no_improve += 1
+                    logger.info(f"No improvement at step {total_steps}, count: {epochs_no_improve}/{patience}")
 
-                if patience_count >= cfg["training"]["patience"]:
-                    return circuit, Z
+                if epochs_no_improve >= patience:
+                    logger.info("Early stopping triggered.")
+                    return circuit, circuit_partition_function, logs
+                
+                if total_steps % 500 == 0:
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                
+                circuit.train()
+                
+            if total_steps >= max_train_steps:
+                break
 
-            if total_steps >= max_steps:
-                return circuit, Z
+    return circuit, circuit_partition_function, logs
 
-    return circuit, Z
 
-def validate(circuit, Z, loader, device):
+def evaluate_circuit(
+        circuit,
+        circuit_partition_function,
+        test_loader,
+        device,
+        checkpoint_path,
+        log_to_wandb=True
+        ):
+    
+    circuit.load_state_dict(torch.load(checkpoint_path, map_location=device))
     circuit.eval()
-    total, count = 0.0, 0
+
+    test_nll_sum = 0.0
+    test_count = 0
 
     with torch.inference_mode():
-        for batch in loader:
-            batch = batch.to(device, non_blocking=True)
+        Z = circuit_partition_function()
+
+        for batch in tqdm(test_loader, desc="[Test]", leave=False):
+            batch = batch.to(device) 
             log_liks = circuit(batch) - Z
             loss = -log_liks.mean()
-            total += loss.item() * batch.size(0)
-            count += batch.size(0)
+            test_nll_sum += loss.item() * batch.size(0)
+            test_count += batch.size(0)
+
             del batch, log_liks, loss
 
-    return total / count
+    avg_test_nll = test_nll_sum / test_count
+    avg_test_bpd = avg_test_nll / (28 * 28 * np.log(2.0))
 
-def evaluate(circuit, Z, loader, cfg, device):
-    circuit.load_state_dict(torch.load(cfg["training"]["save_path"], map_location=device))
-    circuit.eval()
+    logger.info(f"Test NLL: {avg_test_nll:.4f} | bpd: {avg_test_bpd:.4f}")
 
-    total, count = 0.0, 0
+    if log_to_wandb:
+        wandb.log({"test_nll": avg_test_nll, "test_bpd": avg_test_bpd})
 
-    with torch.inference_mode():
-        for batch in tqdm(loader, desc="[Test]", leave=False):
-            batch = batch.to(device, non_blocking=True)
-            log_liks = circuit(batch) - Z
-            loss = -log_liks.mean()
-            total += loss.item() * batch.size(0)
-            count += batch.size(0)
-            del batch, log_liks, loss
+    return avg_test_nll, avg_test_bpd
 
-    nll = total / count
-    bpd = nll / (28 * 28 * np.log(2))
-    logger.info(f"Test NLL: {nll:.4f} | BPD: {bpd:.4f}")
 
-    return nll, bpd
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="config_mnist.yml")
-    parser.add_argument("--override", nargs="*", default=[])
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Train probabilistic circuit on MNIST")
+    parser.add_argument("--config", type=str, default="config_mnist.yml",
+                        help="Path to the YAML configuration file")
+    parser.add_argument("--override", nargs="*", default=[],
+                        help="Override config values, e.g. --override training.lr=0.001 dataset.batch_size=256")
     args = parser.parse_args()
 
-    with open(args.config) as f:
+    with open(args.config, "r") as f:
         cfg = yaml.safe_load(f)
 
-    for item in args.override:
-        k, v = item.split("=")
-        set_nested_key(cfg, k, v)
+    for override_str in args.override:
+        if "=" not in override_str:
+            raise ValueError(f"Invalid override format: {override_str}. Expected key=value")
+        key, val = override_str.split("=", 1)
+        set_nested_key(cfg, key, val)
+
+    print("⚙️ Final configuration:")
+    print(yaml.dump(cfg, sort_keys=False, default_flow_style=False))
 
     device = torch.device(cfg["training"]["device"] if torch.cuda.is_available() else "cpu")
 
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.benchmark = True
+    use_wandb = cfg["logging"].get("use_wandb", False)
+    if use_wandb:
+        wandb.login()
+        run = wandb.init(project=cfg["project"], config=cfg)
+        
+    valid_split_percentage = cfg["dataset"]["valid_split_percentage"]
+    mnist_train = datasets.MNIST(root=cfg["dataset"]["root"], train=True, download=True)
+    mnist_test = datasets.MNIST(root=cfg["dataset"]["root"], train=False, download=True)
 
-    mnist_train = datasets.MNIST(cfg["dataset"]["root"], train=True, download=True)
-    mnist_test = datasets.MNIST(cfg["dataset"]["root"], train=False, download=True)
+    X_train = mnist_train.data.view(-1, 28 * 28).long().to(device)
+    X_test = mnist_test.data.view(-1, 28 * 28).long().to(device)
+ 
+    n_val = int(len(X_train) * valid_split_percentage)
+    n_train = len(X_train) - n_val
+    train_data, val_data = torch.utils.data.random_split(
+        X_train,
+        [n_train, n_val],
+        generator=torch.Generator().manual_seed(42)
+    )
 
-    X_train = mnist_train.data.view(-1, 28 * 28).long()
-    X_test = mnist_test.data.view(-1, 28 * 28).long()
+    train_loader = DataLoader(train_data, batch_size=cfg["dataset"]["batch_size"], shuffle=True)
+    val_loader = DataLoader(val_data, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
+    test_loader = DataLoader(X_test, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
 
-    n_val = int(len(X_train) * cfg["dataset"]["valid_split_percentage"])
-    train_data, val_data = torch.utils.data.random_split(X_train, [len(X_train) - n_val, n_val])
+    weight_dir = os.path.join(os.getcwd(), "best_categorical_miwae.pt")
 
-    train_loader = DataLoader(
-        train_data,
-        batch_size=cfg["dataset"]["batch_size"],
-        shuffle=True,
-        num_workers=os.cpu_count(),
-        pin_memory=True,
-        persistent_workers=True
-        )
-    val_loader = DataLoader(
-        val_data,
-        batch_size=cfg["dataset"]["batch_size"],
-        shuffle=False,
-        num_workers=os.cpu_count(),
-        pin_memory=True,
-        persistent_workers=True
-        )
-    test_loader = DataLoader(
-        X_test,
-        batch_size=cfg["dataset"]["batch_size"],
-        shuffle=False,
-        num_workers=os.cpu_count(),
-        pin_memory=True
-        )
-    learn_cfg = cfg["learn_spn"]
-
-    spn = LearnSPN(
-        alpha=learn_cfg.get("alpha", 0.5),
-        image_shape=tuple(learn_cfg.get("image_shape", [1, 28, 28])),
-        seed=learn_cfg.get("seed", 42),
-        noise_scale=learn_cfg.get("noise_scale", 1e-1),
-        use_miwae=learn_cfg.get("use_miwae", False),
+    params = cfg["learn_spn"]
+    spn_learner = LearnSPN(
+        alpha=params["alpha"],
+        noise_scale=params["noise_scale"],
+        use_miwae=params["use_miwae"],
+        data_format="image",
+        image_shape=tuple(params["image_shape"]),
         device=device,
-        data_format="image" 
+        weight_dir=weight_dir
+    )
+    symbolic_circuit = spn_learner.learn_spn(
+        train_data.dataset,
+        input_layer="categorical",
+        region_graph=params["region_graph"],
+        activation=params["activation"],
+        weights_init=params["weights_init"],
+        sum_product_layer=params["sum_product_layer"],
+        num_input_units=params["num_input_units"],
+        num_sum_units=params["num_sum_units"],
+        use_mixing_weights=params["use_mixing_weights"],
+        use_estimated_weights=params["use_estimated_weights"]
     )
 
-    symbolic_circuit = spn.learn_spn(
-        train_data.dataset,
-        region_graph=learn_cfg.get("region_graph", "quad-graph"),
-        input_layer="categorical",
-        activation=learn_cfg.get("activation", "softmax"),
-        weights_init=learn_cfg.get("weights_init", "normal"),
-        sum_product_layer=learn_cfg.get("sum_product_layer", "cp"),
-        num_input_units=learn_cfg.get("num_input_units", 1),
-        num_sum_units=learn_cfg.get("num_sum_units", 1),
-        use_estimated_weights=learn_cfg.get("use_estimated_weights", True),
-        use_mixing_weights=learn_cfg.get("use_mixing_weights", True)
-    )
     symbolic_partition_function = sf.integrate(symbolic_circuit)
 
-    circuit, Z = train_circuit(symbolic_circuit, symbolic_partition_function, train_loader, val_loader, cfg, device)
+    logger.info(f"Circuit built with {len(list(symbolic_circuit.layers))} layers")
+
+    max_train_steps = int(len(train_data) // cfg["dataset"]["batch_size"] * cfg["training"]["epochs"])
+
+    circuit, circuit_partition_function, _ = train_circuit(
+        symbolic_circuit,
+        symbolic_partition_function,
+        train_loader,
+        val_loader,
+        max_train_steps=max_train_steps,
+        lr=cfg["training"]["lr"],
+        T_0=cfg["training"]["T_0"],
+        eta_min=cfg["training"]["eta_min"],
+        weight_decay=cfg["training"]["weight_decay"],
+        validation_steps=cfg["training"]["validation_steps"],
+        delta=cfg["training"]["delta"],
+        patience=cfg["training"]["patience"],
+        device=device,
+        save_path=cfg["training"]["save_path"],
+        log_to_wandb=use_wandb
+    )
 
     torch.cuda.empty_cache()
     gc.collect()
 
-    evaluate(circuit, Z, test_loader, cfg, device)
+    evaluate_circuit(
+        circuit,
+        circuit_partition_function,
+        test_loader,
+        device=device,
+        checkpoint_path=cfg["training"]["save_path"],
+        log_to_wandb=use_wandb
+    )
 
-if __name__ == "__main__":
-    main()
+    if use_wandb:
+        run.finish()
