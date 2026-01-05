@@ -259,7 +259,6 @@ if __name__ == "__main__":
         symbolic_partition_function,
         train_loader,
         val_loader,
-        max_epochs=cfg["training"]["epochs"],
         max_train_steps=max_train_steps,
         lr=cfg["training"]["lr"],
         T_0=cfg["training"]["T_0"],
