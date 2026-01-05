@@ -98,14 +98,15 @@ def train_circuit(
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(circuit.parameters(), 1.0)
-            
+
             optimizer.step()
             scheduler.step()
 
-            del batch, loss, log_liks
-
             train_loss_sum += loss.item() * batch.size(0)
             train_count += batch.size(0)
+
+            del batch, loss, log_liks
+            
             total_steps += 1
             
             if total_steps % validation_steps == 0:
@@ -126,7 +127,6 @@ def train_circuit(
                 avg_train_nll = train_loss_sum / train_count
                 bpd_train = avg_train_nll / (28 * 28 * np.log(2.0))
                 bpd_val = avg_val_nll / (28 * 28 * np.log(2.0))
-
 
                 logs["step"].append(total_steps)
                 logs["train_nll"].append(avg_train_nll)
