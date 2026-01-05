@@ -50,7 +50,6 @@ def train_circuit(
     symbolic_partition_function,
     train_loader,
     val_loader,
-    max_epochs,
     max_train_steps,
     lr,
     T_0,
@@ -88,9 +87,7 @@ def train_circuit(
 
         for batch in tqdm(train_loader, desc="[Train]", leave=False):
             batch = batch.to(device)
-            log_scores = circuit(batch)
-            log_part_func = circuit_partition_function()
-            log_liks = log_scores - log_part_func
+            log_liks = circuit(batch) - circuit_partition_function()
             loss = -log_liks.mean()
 
             optimizer.zero_grad()
@@ -101,17 +98,14 @@ def train_circuit(
             train_loss_sum += loss.item() * batch.size(0)
             train_count += batch.size(0)
             total_steps += 1
-
-            # Validate every `validation_steps`
+            
             if total_steps % validation_steps == 0:
                 val_loss_sum = 0.0
                 val_count = 0
                 with torch.no_grad():
                     for val_batch in val_loader:
                         val_batch = val_batch.to(device)
-                        log_scores = circuit(val_batch)
-                        log_part_func = circuit_partition_function()
-                        log_liks = log_scores - log_part_func
+                        log_liks = circuit(val_batch) - circuit_partition_function()
                         val_loss_sum += (-log_liks.mean()).item() * val_batch.size(0)
                         val_count += val_batch.size(0)
                 avg_val_nll = val_loss_sum / val_count
@@ -278,6 +272,9 @@ if __name__ == "__main__":
         save_path=cfg["training"]["save_path"],
         log_to_wandb=use_wandb
     )
+
+    torch.cuda.empty_cache()
+    gc.collect()
 
     evaluate_circuit(
         circuit,
