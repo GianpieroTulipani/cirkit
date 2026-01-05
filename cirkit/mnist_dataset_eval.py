@@ -11,8 +11,6 @@ from loguru import logger
 import matplotlib.pyplot as plt
 import torch.optim as optim
 
-from torch.cuda.amp import autocast, GradScaler
-
 from cirkit.pipeline import PipelineContext, compile
 import cirkit.symbolic.functional as sf
 from cirkit.templates.learn_spn import LearnSPN
@@ -79,7 +77,6 @@ def train_circuit(
 
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=1, eta_min=eta_min)
-    scaler = GradScaler()
 
     best_val_nll = float("inf")
     epochs_no_improve = 0
