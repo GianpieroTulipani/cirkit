@@ -72,9 +72,6 @@ def train_circuit(
     circuit = ctx.compile(symbolic_circuit).to(device)
     circuit_partition_function = ctx.compile(symbolic_partition_function).to(device)
 
-    with torch.no_grad():
-        Z = circuit_partition_function()
-
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=1, eta_min=eta_min)
 
@@ -92,7 +89,7 @@ def train_circuit(
         for batch in tqdm(train_loader, desc="[Train]", leave=False):
             batch = batch.to(device)
 
-            log_liks = circuit(batch) - Z
+            log_liks = circuit(batch) - circuit_partition_function()
             loss = -log_liks.mean()
 
             optimizer.zero_grad()
@@ -115,7 +112,7 @@ def train_circuit(
                 with torch.inference_mode():
                     for val_batch in val_loader:
                         val_batch = val_batch.to(device)
-                        log_liks = circuit(val_batch) - Z
+                        log_liks = circuit(val_batch) - circuit_partition_function()
                         val_loss_sum += (-log_liks.mean()).item() * val_batch.size(0)
                         val_count += val_batch.size(0)
 
@@ -178,11 +175,9 @@ def evaluate_circuit(
     test_count = 0
 
     with torch.inference_mode():
-        Z = circuit_partition_function()
-
         for batch in tqdm(test_loader, desc="[Test]", leave=False):
             batch = batch.to(device) 
-            log_liks = circuit(batch) - Z
+            log_liks = circuit(batch) - circuit_partition_function()
             loss = -log_liks.mean()
             test_nll_sum += loss.item() * batch.size(0)
             test_count += batch.size(0)
