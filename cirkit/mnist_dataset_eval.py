@@ -11,6 +11,8 @@ from loguru import logger
 import matplotlib.pyplot as plt
 import torch.optim as optim
 
+from torch.cuda.amp import autocast, GradScaler
+
 from cirkit.pipeline import PipelineContext, compile
 import cirkit.symbolic.functional as sf
 from cirkit.templates.learn_spn import LearnSPN
@@ -77,6 +79,7 @@ def train_circuit(
 
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=1, eta_min=eta_min)
+    scaler = GradScaler()
 
     best_val_nll = float("inf")
     epochs_no_improve = 0
@@ -91,22 +94,25 @@ def train_circuit(
 
         for batch in tqdm(train_loader, desc="[Train]", leave=False):
             batch = batch.to(device)
-            log_liks = circuit(batch) - Z
-            loss = -log_liks.mean()
-
             optimizer.zero_grad()
-            loss.backward()
+            with autocast():
+                log_liks = circuit(batch) - Z
+                loss = -log_liks.mean()
+
+            scaler.scale(loss).backward()
 
             torch.nn.utils.clip_grad_norm_(circuit.parameters(), 1.0)
 
-            optimizer.step()
+            #optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
 
             train_loss_sum += loss.item() * batch.size(0)
             train_count += batch.size(0)
 
             del batch, loss, log_liks
-            
+
             total_steps += 1
             
             if total_steps % validation_steps == 0:
