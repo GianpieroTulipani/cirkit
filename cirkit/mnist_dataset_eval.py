@@ -162,12 +162,29 @@ def main():
     n_val = int(len(X_train) * cfg["dataset"]["valid_split_percentage"])
     train_data, val_data = torch.utils.data.random_split(X_train, [len(X_train) - n_val, n_val])
 
-    train_loader = DataLoader(train_data, batch_size=cfg["dataset"]["batch_size"], shuffle=True,
-                              pin_memory=True, persistent_workers=True)
-    val_loader = DataLoader(val_data, batch_size=cfg["dataset"]["batch_size"],
-                            pin_memory=True, persistent_workers=True)
-    test_loader = DataLoader(X_test, batch_size=cfg["dataset"]["batch_size"],
-                             pin_memory=True)
+    train_loader = DataLoader(
+        train_data,
+        batch_size=cfg["dataset"]["batch_size"],
+        shuffle=True,
+        num_workers=os.cpu_count(),
+        pin_memory=True,
+        persistent_workers=True
+        )
+    val_loader = DataLoader(
+        val_data,
+        batch_size=cfg["dataset"]["batch_size"],
+        shuffle=False,
+        num_workers=os.cpu_count(),
+        pin_memory=True,
+        persistent_workers=True
+        )
+    test_loader = DataLoader(
+        X_test,
+        batch_size=cfg["dataset"]["batch_size"],
+        shuffle=False,
+        num_workers=os.cpu_count(),
+        pin_memory=True
+        )
 
     spn = LearnSPN(**cfg["learn_spn"], device=device)
     symbolic_circuit = spn.learn_spn(train_data.dataset, input_layer="categorical")
