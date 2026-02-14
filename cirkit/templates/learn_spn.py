@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from torch import LongTensor, Tensor
 
-from fast_pytorch_kmeans import KMeans
+from fast_pytorch_kmeans impor11t KMeans
 
 from cirkit.symbolic.circuit import Circuit
 from cirkit.templates.miwae import ConvVAE
@@ -271,7 +271,7 @@ class LearnSPN:
         
         activation_dict = {}
         if activation == 'positive-clamp':
-            activation_dict['vmin'] = 1e-19
+            activation_dict['vmin'] = np.sqrt(torch.finfo(torch.get_default_dtype()).tiny)
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
   
@@ -310,7 +310,7 @@ class LearnSPN:
         )
         activation_dict = {}
         if activation == 'positive-clamp':
-            activation_dict['vmin'] = 1e-19
+            activation_dict['vmin'] = np.sqrt(torch.finfo(torch.get_default_dtype()).tiny)
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
         
