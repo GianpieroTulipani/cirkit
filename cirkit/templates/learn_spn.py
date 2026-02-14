@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from torch import LongTensor, Tensor
 
-from fast_pytorch_kmeans impor11t KMeans
+from fast_pytorch_kmeans import KMeans
 
 from cirkit.symbolic.circuit import Circuit
 from cirkit.templates.miwae import ConvVAE
