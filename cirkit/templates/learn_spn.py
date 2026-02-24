@@ -163,7 +163,7 @@ class LearnSPN:
                 
                 param = self._make_input_param_estimated(
                     feat_idx=int(scope[0]),
-                    instance_ids=all_rows,
+                    instance_ids=rows_idx,
                     data=data,
                     num_input_units=layer.num_output_units,
                     num_categories=layer.num_categories,
