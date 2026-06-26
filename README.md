@@ -64,12 +64,13 @@ Queries can be implemented either **symbolically**, i.e. by constructing a new c
 ## How to Install the Library
 
 cirkit currently requires Python 3.10 and PyTorch 2.3 or above versions.
-To start developing, install the virtual environment and activate it first.
+Install the latest release version via pip.
 ```shell
-virtualenv venv           # or python -m venv venv
-source venv/bin/activate
+pip install libcirkit
 ```
-Then install the required dependencies in [development mode](https://setuptools.pypa.io/en/latest/userguide/development_mode.html).
+
+For the latest development version, install from github after cloning this repository locally.
+To install the required dependencies in [development mode](https://setuptools.pypa.io/en/latest/userguide/development_mode.html).
 ```shell
 pip install -U pip        # update pip
 pip install -e ".[dev]"
@@ -169,10 +170,10 @@ If you use cirkit in your publications, please cite:
 
 ```
 @software{The_APRIL_Lab_cirkit_2024,
-author = {The APRIL Lab},
+author = {{The april Lab}},
 license = {GPL-3.0},
 month = oct,
-title = {{cirkit}},
+title = {{cirkit: a python framework to build, learn and reason about probabilistic circuits and tensor networks}},
 url = {https://github.com/april-tools/cirkit},
 version = {0.1},
 year = {2024}

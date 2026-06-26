@@ -1,5 +1,6 @@
 import itertools
 from collections import defaultdict
+from typing import cast
 
 from cirkit.templates.region_graph.algorithms.utils import HypercubeToScope
 from cirkit.templates.region_graph.graph import (
@@ -14,6 +15,11 @@ from cirkit.utils.scope import Scope
 # pylint: disable-next=invalid-name
 def QuadTree(shape: tuple[int, int, int], *, num_patch_splits: int = 2) -> RegionGraph:
     r"""Constructs a Quad Tree region graph.
+
+    See:
+        - *Unifying and understanding overparameterized circuit representations via low-rank tensor decompositions.* [🔗](https://openreview.net/forum?id=1btutFdIya)
+          Mari, Antonio, Gennaro Vessio, and Antonio Vergari.
+          In The 6th Workshop on Tractable Probabilistic Modeling. 2023.
 
     Args:
         shape: The image shape $(C, H, W)$, where $H$ is the height, $W$ is the width,
@@ -33,6 +39,11 @@ def QuadTree(shape: tuple[int, int, int], *, num_patch_splits: int = 2) -> Regio
 # pylint: disable-next=invalid-name
 def QuadGraph(shape: tuple[int, int, int]) -> RegionGraph:
     r"""Constructs a Quad Graph region graph.
+
+    See:
+        - *Unifying and understanding overparameterized circuit representations via low-rank tensor decompositions.* [🔗](https://openreview.net/forum?id=1btutFdIya)
+          Mari, Antonio, Gennaro Vessio, and Antonio Vergari.
+          In The 6th Workshop on Tractable Probabilistic Modeling. 2023.
 
     Args:
         shape: The image shape $(C, H, W)$, where $H$ is the height, $W$ is the width,
@@ -106,7 +117,7 @@ def _QuadBuilder(
         nodes.append(rgn)
         nodes.append(ptn)
         in_nodes[rgn] = [ptn]
-        in_nodes[ptn] = rgn_in
+        in_nodes[ptn] = cast(list[RegionGraphNode], rgn_in)
         return rgn
 
     def merge_4_regions_tree_(rgn_in: list[RegionNode], *, num_patch_splits: int) -> RegionNode:

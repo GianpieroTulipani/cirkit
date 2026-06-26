@@ -1,8 +1,11 @@
+# pylint: disable=unused-argument
+
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import torch
 
-from cirkit.backend.compiler import ParameterCompilationFunc, ParameterCompilationSign
+from cirkit.backend.compiler import ParameterCompilationSign
 from cirkit.backend.torch.parameters.nodes import (
     TorchClampParameter,
     TorchConjugateParameter,
@@ -18,6 +21,7 @@ from cirkit.backend.torch.parameters.nodes import (
     TorchMixingWeightParameter,
     TorchOuterProductParameter,
     TorchOuterSumParameter,
+    TorchParameterNode,
     TorchPointerParameter,
     TorchPolynomialDifferential,
     TorchPolynomialProduct,
@@ -27,6 +31,7 @@ from cirkit.backend.torch.parameters.nodes import (
     TorchScaledSigmoidParameter,
     TorchSigmoidParameter,
     TorchSoftmaxParameter,
+    TorchSoftplusParameter,
     TorchSquareParameter,
     TorchSumParameter,
     TorchTensorParameter,
@@ -57,6 +62,7 @@ from cirkit.symbolic.parameters import (
     ScaledSigmoidParameter,
     SigmoidParameter,
     SoftmaxParameter,
+    SoftplusParameter,
     SquareParameter,
     SumParameter,
     TensorParameter,
@@ -75,7 +81,8 @@ def _retrieve_dtype(dtype: DataType) -> torch.dtype:
     if dtype == DataType.COMPLEX:
         return default_float_dtype.to_complex()
     raise ValueError(
-        f"Cannot determine the torch.dtype to use, current default: {default_float_dtype}, given dtype: {dtype}"
+        f"Cannot determine the torch.dtype to use, current default: {default_float_dtype},"
+        f" given dtype: {dtype}"
     )
 
 
@@ -183,6 +190,13 @@ def compile_clamp_parameter(compiler: "TorchCompiler", p: ClampParameter) -> Tor
     return TorchClampParameter(in_shape, vmin=p.vmin, vmax=p.vmax)
 
 
+def compile_softplus_parameter(
+    compiler: "TorchCompiler", p: SoftplusParameter
+) -> TorchSoftplusParameter:
+    (in_shape,) = p.in_shapes
+    return TorchSoftplusParameter(in_shape)
+
+
 def compile_conjugate_parameter(
     compiler: "TorchCompiler", p: ClampParameter
 ) -> TorchConjugateParameter:
@@ -262,7 +276,9 @@ def compile_polynomial_differential(
     return TorchPolynomialDifferential(*p.in_shapes, order=p.order)
 
 
-DEFAULT_PARAMETER_COMPILATION_RULES: dict[ParameterCompilationSign, ParameterCompilationFunc] = {  # type: ignore[misc]
+DEFAULT_PARAMETER_COMPILATION_RULES: dict[
+    ParameterCompilationSign, Callable[..., TorchParameterNode]
+] = {
     TensorParameter: compile_tensor_parameter,
     ConstantParameter: compile_constant_parameter,
     ReferenceParameter: compile_reference_parameter,
@@ -278,6 +294,7 @@ DEFAULT_PARAMETER_COMPILATION_RULES: dict[ParameterCompilationSign, ParameterCom
     SigmoidParameter: compile_sigmoid_parameter,
     ScaledSigmoidParameter: compile_scaled_sigmoid_parameter,
     ClampParameter: compile_clamp_parameter,
+    SoftplusParameter: compile_softplus_parameter,
     ConjugateParameter: compile_conjugate_parameter,
     ReduceSumParameter: compile_reduce_sum_parameter,
     ReduceProductParameter: compile_reduce_product_parameter,

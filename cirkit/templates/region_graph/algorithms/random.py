@@ -20,10 +20,9 @@ def RandomBinaryTree(
     """Construct a RG with random binary trees.
 
     See:
-        Random sum-product networks: A simple but effective approach to probabilistic deep learning.
-        Robert Peharz, Antonio Vergari, Karl Stelzner, Alejandro Molina, Xiaoting Shao,
-        Martin Trapp, Kristian Kersting, Zoubin Ghahramani.
-        UAI 2019.
+        - *Random sum-product networks: A simple but effective approach to probabilistic deep learning.*  [🔗](https://proceedings.mlr.press/v115/peharz20a.html)
+          Robert Peharz, Antonio Vergari, Karl Stelzner, Alejandro Molina, Xiaoting Shao, Martin Trapp, Kristian Kersting, and Zoubin Ghahramani.
+          In Uncertainty in Artificial Intelligence, pp. 334-344. PMLR, 2020.
 
     Args:
         num_variables (int): The number of variables in the RG.
@@ -49,7 +48,7 @@ def RandomBinaryTree(
         raise ValueError(f"The depth must be between 0 and {max_depth}")
     random_state = np.random.RandomState(seed)
     root = RegionNode(range(num_variables))
-    nodes = [root]
+    nodes: list[RegionGraphNode] = [root]
     in_nodes: dict[RegionGraphNode, list[RegionGraphNode]] = defaultdict(list)
 
     def random_scope_partitioning(
@@ -58,8 +57,8 @@ def RandomBinaryTree(
         proportions: Sequence[float] | None = None,
     ) -> list[Scope]:
         # Shuffle the region node scope
-        scope = list(scope)
-        random_state.shuffle(scope)
+        scope_ls = list(scope)
+        random_state.shuffle(scope_ls)
 
         # ANNOTATE: Numpy has typing issues.
         split: np.ndarray  # Unnormalized split points including 0 and 1.
@@ -74,32 +73,32 @@ def RandomBinaryTree(
         # CAST: Numpy has typing issues.
         # IGNORE: Numpy has typing issues.
         split_point: list[int] = (
-            (split / split[-1] * len(scope)).round().astype(np.int64).tolist()  # type: ignore[misc]
+            (split / split[-1] * len(scope_ls)).round().astype(np.int64).tolist()
         )
 
         # ANNOTATE: Specify content for empty container.
         scopes: list[Scope] = []
         for l, r in itertools.pairwise(split_point):
             if l < r:  # A region must have as least one var, otherwise we skip it.
-                scopes.append(Scope(scope[l:r]))
+                scopes.append(Scope(scope_ls[l:r]))
 
         if len(scopes) == 1:
             # Only one region, meaning cannot partition anymore, and we just keep the original
             # node as the leaf.
-            return [Scope(scope)]
+            return [Scope(scope_ls)]
 
         return scopes
 
     for _ in range(num_repetitions):
-        frontier = [root]
+        frontier: list[RegionGraphNode] = [root]
         for _ in range(depth):
-            next_frontier = []
+            next_frontier: list[RegionGraphNode] = []
             for rgn in frontier:
                 partition_node = PartitionNode(rgn.scope)
                 scopes = random_scope_partitioning(rgn.scope, num_parts=2)
                 if len(scopes) == 1:  # No further binary partitionings are possible
                     continue
-                region_nodes = [RegionNode(scope) for scope in scopes]
+                region_nodes: list[RegionGraphNode] = [RegionNode(scope) for scope in scopes]
                 nodes.append(partition_node)
                 nodes.extend(region_nodes)
                 in_nodes[rgn].append(partition_node)

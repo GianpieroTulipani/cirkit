@@ -1,6 +1,7 @@
 import itertools
 from collections import defaultdict, deque
 from collections.abc import Sequence
+from typing import cast
 
 from cirkit.templates.region_graph.algorithms.utils import HyperCube, HypercubeToScope
 from cirkit.templates.region_graph.graph import (
@@ -13,7 +14,7 @@ from cirkit.utils.scope import Scope
 
 
 # DISABLE: We use function name with upper case to mimic a class constructor.
-# pylint: disable-next=invalid-name,too-complex,too-many-locals
+# pylint: disable-next=invalid-name
 def PoonDomingos(
     shape: tuple[int, int, int],
     *,
@@ -23,9 +24,9 @@ def PoonDomingos(
     r"""Constructs a region graph with the Poon-Domingos structure.
 
     See:
-        Sum-Product Networks: A New Deep Architecture.
-        Hoifung Poon, Pedro Domingos.
-        UAI 2011.
+        - *Sum-Product Networks: A New Deep Architecture* [🔗](https://arxiv.org/abs/1202.3732)
+          Hoifung Poon and Pedro Domingos.
+          In Uncertainty in Artificial Intelligence 2011.
 
     Args:
         shape: The image shape $(C, H, W)$, where $H$ is the height, $W$ is the width,
@@ -61,7 +62,7 @@ def PoonDomingos(
     queue: deque[HyperCube] = deque()
     depth_dict: dict[HyperCube, int] = {}  # Also serve as a "visited" set.
 
-    cur_hypercube = ((0,) * len(shape), shape)
+    cur_hypercube: tuple[tuple[int, ...], tuple[int, ...]] = ((0,) * len(shape), shape)
     root_scope = hypercube_to_scope[cur_hypercube]
     root = RegionNode(root_scope)
     nodes.append(root)
@@ -69,7 +70,7 @@ def PoonDomingos(
     queue.append(cur_hypercube)
     depth_dict[cur_hypercube] = 0
 
-    # DISABLE: This is considered a constant.
+    # DISABLE: This is considered a constant
     SENTINEL = ((-1,) * len(shape), (-1,) * len(shape))  # pylint: disable=invalid-name
 
     def cut_hypercube_(
@@ -99,6 +100,7 @@ def PoonDomingos(
         if rgn is None:
             rgn = RegionNode(hypercube_to_scope[hypercube])
             nodes.append(rgn)
+            scope_region[hypercube_to_scope[hypercube]] = rgn
         point1, point2 = hypercube
         assert all(
             point1[axis] < cut_point < point2[axis] for cut_point in cut_points
@@ -117,13 +119,14 @@ def PoonDomingos(
             if rgn_hypercube is None:
                 rgn_hypercube = RegionNode(hypercube_to_scope[hypercube])
                 nodes.append(rgn_hypercube)
+                scope_region[hypercube_to_scope[hypercube]] = rgn_hypercube
             region_nodes.append(rgn_hypercube)
 
         # Add partitioning
         ptn = PartitionNode(rgn.scope)
         nodes.append(ptn)
         in_nodes[rgn].append(ptn)
-        in_nodes[ptn] = region_nodes
+        in_nodes[ptn] = cast(list[RegionGraphNode], region_nodes)
         return hypercubes
 
     def queue_popleft() -> HyperCube:

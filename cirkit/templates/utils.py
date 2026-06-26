@@ -25,6 +25,7 @@ from cirkit.symbolic.parameters import (
     ParameterFactory,
     SigmoidParameter,
     SoftmaxParameter,
+    SoftplusParameter,
     TensorParameter,
     UnaryParameterOp,
 )
@@ -94,7 +95,7 @@ class ProductLayerFactory(Protocol):  # pylint: disable=too-few-public-methods
 
 
 def named_parameterizations_to_factories(
-    params: Mapping[str, Parameterization]
+    params: Mapping[str, Parameterization],
 ) -> Mapping[str, ParameterFactory]:
     """Given a mapping of parameters names to parameterizations, retrieve a dictionary
         mapping the  same parameters names to symbolic parameter factories.
@@ -109,7 +110,7 @@ def named_parameterizations_to_factories(
     return {name + "_factory": parameterization_to_factory(param) for name, param in params.items()}
 
 
-def name_to_input_layer_factory(name: str, **kwargs) -> InputLayerFactory:
+def name_to_input_layer_factory(name: str, **kwargs: Any) -> InputLayerFactory:
     """Retrieves a factory that constructs symbolic input layers.
 
     Args:
@@ -161,7 +162,7 @@ def parameterization_to_factory(param: Parameterization) -> ParameterFactory:
 
 
 def name_to_parameter_activation(
-    name: str, **kwargs
+    name: str, **kwargs: Any
 ) -> Callable[[tuple[int, ...]], UnaryParameterOp] | None:
     """Retrieves a symbolic unary parameter operator by name.
 
@@ -189,6 +190,8 @@ def name_to_parameter_activation(
             if "vmin" not in kwargs:
                 kwargs["vmin"] = 1e-18
             return functools.partial(ClampParameter, **kwargs)
+        case "softplus":
+            return functools.partial(SoftplusParameter, **kwargs)
         case _:
             raise ValueError
 
@@ -216,7 +219,7 @@ def name_to_dtype(name: str) -> DataType:
             raise ValueError(f"Unknown data type called {name}")
 
 
-def name_to_initializer(name: str, **kwargs) -> Initializer:
+def name_to_initializer(name: str, **kwargs: Any) -> Initializer:
     """Retrieves a symbolic initializer object by name.
 
     Args:
