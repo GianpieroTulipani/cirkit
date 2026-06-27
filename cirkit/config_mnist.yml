@@ -20,10 +20,10 @@ training:
 
 learn_spn:
   alpha: 5.0
-  noise_scale: 2.0
+  noise_scale: 0.5
   use_miwae: false
   sum_product_layer: "cp"
-  activation: "softmax"
+  activation: "softplus"
   weights_init: "normal"
   region_graph: "quad-graph"
   num_input_units: 1
