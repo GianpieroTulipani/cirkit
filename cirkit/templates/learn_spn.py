@@ -82,7 +82,7 @@ class LearnSPN:
             use_mixing_weights: bool = True
             ) -> Circuit:
         
-        assert weights_init in ('normal', 'None'), "weights_init should be 'normal' or 'None'"
+        assert weights_init in ('normal', 'uniform', 'dirichlet', 'None'), "weights_init should be 'normal', 'uniform', 'dirichlet' or 'None'"
 
         if region_graph == 'quad-graph':
             rg = QuadGraph(self.image_shape)
