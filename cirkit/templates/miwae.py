@@ -20,7 +20,7 @@ class Encoder(nn.Module):
         self.latent_dim = latent_dim
 
         self.feature_extractor = nn.Sequential(
-                nn.Conv2d(in_channels=1, out_channels=16, kernel_size=5, stride=2, padding=2),
+                nn.Conv2d(in_channels=channel_input, out_channels=16, kernel_size=5, stride=2, padding=2),
                 nn.ReLU(),
                 nn.Conv2d(in_channels=16, out_channels=32, kernel_size=5, stride=2, padding=2),
                 nn.ReLU(),
