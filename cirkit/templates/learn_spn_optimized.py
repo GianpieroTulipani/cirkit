@@ -98,12 +98,10 @@ class LearnSPN:
         if activation == 'positive-clamp':
             return p
         if activation == 'softplus':
-            # inverso esatto: softplus(log(expm1(p))) = p
             return np.log(np.expm1(p))
         return np.log(p)
 
     def _apply_symmetry_breaking(self, theta: np.ndarray, activation: str) -> np.ndarray:
-        """=== OPT 4: rumore piccolo, applicato nello spazio giusto."""
         s = self.noise_scale
         if not s or s <= 0.0:
             return theta
@@ -115,7 +113,6 @@ class LearnSPN:
         return theta + np.random.normal(loc=0.0, scale=s, size=theta.shape)
 
     def _alpha_per_bin(self, num_bins: int) -> float:
-        """=== OPT 6b: massa di prior totale = alpha (non alpha*num_bins)."""
         if self.adaptive_alpha:
             return self.alpha / max(num_bins, 1)
         return self.alpha
@@ -136,10 +133,8 @@ class LearnSPN:
         use_mixing_weights: bool = True,
     ) -> Circuit:
 
-        # === OPT 1: 'normal' (media 0) e' patologica per il clamp nel percorso NON stimato
-        #            (~meta' dei pesi finisce sul floor con gradiente nullo).
         if activation == 'positive-clamp' and weights_init == 'normal':
-            weights_init = 'uniform'   # init positivo: clamp e' un no-op all'inizio
+            weights_init = 'uniform'   
 
         assert weights_init in ('normal', 'uniform', 'dirichlet', 'None'), (
             "weights_init should be 'normal', 'uniform', 'dirichlet' or 'None'"
@@ -191,7 +186,7 @@ class LearnSPN:
 
         if use_estimated_weights:
             sc = self._estimate_parameters(sc, data, activation=activation)
-
+        
         return sc
 
     def _estimate_parameters(
@@ -354,13 +349,13 @@ class LearnSPN:
         activation: str,
     ) -> Parameter:
 
-        pool = self._leaf_pool_rows(instance_ids)                                    # OPT 6a
-        per_unit_probs = self._per_unit_distributions(                               # OPT 3
+        pool = self._leaf_pool_rows(instance_ids)                                    
+        per_unit_probs = self._per_unit_distributions(                               
             pool=pool, data=data, feat_idx=feat_idx,
             num_units=num_input_units, num_categories=num_categories,
         )
-        theta = self._to_preactivation(per_unit_probs, activation)                   # OPT 1
-        theta = self._apply_symmetry_breaking(theta, activation)                     # OPT 4
+        theta = self._to_preactivation(per_unit_probs, activation)                   
+        theta = self._apply_symmetry_breaking(theta, activation)                     
 
         tp = TensorParameter(
             num_input_units,
@@ -374,7 +369,7 @@ class LearnSPN:
 
     def _cluster_mixture_weights(self, clusters: List[LongTensor]) -> np.ndarray:
         sizes = np.array([int(c.numel()) for c in clusters], dtype=float)
-        sizes = sizes + self._alpha_per_bin(len(clusters))   # === OPT 6b
+        sizes = sizes + self._alpha_per_bin(len(clusters))
         total = sizes.sum()
         if total <= 0:
             return np.full(len(clusters), 1.0 / len(clusters), dtype=float)
@@ -415,7 +410,7 @@ class LearnSPN:
     ) -> Parameter:
 
         arity = len(clusters)
-        base_mix = self._cluster_mixture_weights(clusters)   # (arity,), somma 1
+        base_mix = self._cluster_mixture_weights(clusters)
 
         if num_sum_units == 1 and num_input_units == 1:
             theta = self._to_preactivation(base_mix.reshape(1, arity), activation)
