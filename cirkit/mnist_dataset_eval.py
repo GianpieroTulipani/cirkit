@@ -71,7 +71,8 @@ def train_circuit(
     validation_steps,
     delta,
     patience,
-    log_to_wandb=True
+    log_to_wandb=True,
+    is_main=True
 ):
     ctx = PipelineContext(
         backend="torch",
@@ -84,7 +85,14 @@ def train_circuit(
     circuit_partition_function = ctx.compile(symbolic_partition_function).to(device)
 
     model = CircuitNLL(circuit, circuit_partition_function).to(device)
-    model = DDP(model, device_ids=[device.index])
+
+    # Dual-mode: usa DDP solo se il process group è stato inizializzato (torchrun);
+    # con `python` singolo processo, `model` resta non wrappato.
+    ddp = dist.is_available() and dist.is_initialized()
+    if ddp:
+        model = DDP(model, device_ids=[device.index] if device.type == "cuda" else None)
+    # `core` accede sempre al CircuitNLL sottostante (con o senza DDP).
+    core = model.module if ddp else model
 
     optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=1, eta_min=eta_min)
@@ -94,7 +102,8 @@ def train_circuit(
     total_steps = 0
 
     logs = {"step": [], "train_nll": [], "val_nll": [], "train_bpd": [], "val_bpd": []}
-    print(f'Starting training for a maximum of {max_train_steps} steps.\n')
+    if is_main:
+        print(f'Starting training for a maximum of {max_train_steps} steps.\n')
     while total_steps < max_train_steps:
         train_loss_sum = 0.0
         train_count = 0
@@ -128,16 +137,20 @@ def train_circuit(
                 with torch.inference_mode():
                     for val_batch in val_loader:
                         val_batch = val_batch.to(device)
-                        log_liks = model.module(val_batch)
+                        log_liks = core(val_batch)
                         val_loss_sum += (-log_liks.mean()).item() * val_batch.size(0)
                         val_count += val_batch.size(0)
 
                         del val_batch, log_liks
 
-                # all-reduce così ogni rank decide lo stesso early-stop (evita deadlock)
-                stats = torch.tensor([val_loss_sum, float(val_count)], device=device)
-                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-                avg_val_nll = (stats[0] / stats[1]).item()
+                # Sotto DDP: all-reduce così ogni rank decide lo stesso early-stop
+                # (evita deadlock). In single-process si usa direttamente la somma locale.
+                if ddp:
+                    stats = torch.tensor([val_loss_sum, float(val_count)], device=device)
+                    dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+                    avg_val_nll = (stats[0] / stats[1]).item()
+                else:
+                    avg_val_nll = val_loss_sum / val_count
                 avg_train_nll = train_loss_sum / train_count
                 bpd_train = avg_train_nll / (28 * 28 * np.log(2.0))
                 bpd_val = avg_val_nll / (28 * 28 * np.log(2.0))
@@ -159,16 +172,19 @@ def train_circuit(
 
                 if avg_val_nll - delta <= best_val_nll:
                     best_val_nll = avg_val_nll
-                    if dist.get_rank() == 0:
-                        torch.save(model.module.circuit.state_dict(), save_path)
+                    if is_main:
+                        torch.save(core.circuit.state_dict(), save_path)
                     epochs_no_improve = 0
-                    logger.success(f"New best model at step {total_steps}, Train NLL: {avg_train_nll:.4f}, Train bpd: {bpd_train:.4f}, Val NLL: {best_val_nll:.4f}, Val bpd: {bpd_val:.4f}")
+                    if is_main:
+                        logger.success(f"New best model at step {total_steps}, Train NLL: {avg_train_nll:.4f}, Train bpd: {bpd_train:.4f}, Val NLL: {best_val_nll:.4f}, Val bpd: {bpd_val:.4f}")
                 else:
                     epochs_no_improve += 1
-                    logger.info(f"No improvement at step {total_steps}, count: {epochs_no_improve}/{patience}")
+                    if is_main:
+                        logger.info(f"No improvement at step {total_steps}, count: {epochs_no_improve}/{patience}")
 
                 if epochs_no_improve >= patience:
-                    logger.info("Early stopping triggered.")
+                    if is_main:
+                        logger.info("Early stopping triggered.")
                     return circuit, circuit_partition_function, logs
 
                 model.train()
@@ -233,14 +249,27 @@ if __name__ == "__main__":
         key, val = override_str.split("=", 1)
         set_nested_key(cfg, key, val)
 
-    print("⚙️ Final configuration:")
-    print(yaml.dump(cfg, sort_keys=False, default_flow_style=False))
+    # Dual-mode: torchrun imposta LOCAL_RANK -> attiva DDP; con `python` semplice no.
+    ddp = "LOCAL_RANK" in os.environ
+    if ddp:
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
+        dist.init_process_group(backend=backend)
+        local_rank = int(os.environ["LOCAL_RANK"])
+        is_main = dist.get_rank() == 0
+    else:
+        local_rank = 0
+        is_main = True
 
-    dist.init_process_group(backend="nccl")
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-    device = torch.device(f"cuda:{local_rank}")
-    is_main = dist.get_rank() == 0
+    if torch.cuda.is_available():
+        torch.cuda.set_device(local_rank)
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = torch.device("cpu")
+
+    if is_main:
+        print("⚙️ Final configuration:")
+        print(yaml.dump(cfg, sort_keys=False, default_flow_style=False))
+        print(f"Mode: {'DDP (' + str(dist.get_world_size()) + ' processes)' if ddp else 'single-process'} | device: {device}")
 
     use_wandb = cfg["logging"].get("use_wandb", False)
     log_to_wandb = use_wandb and is_main
@@ -249,6 +278,12 @@ if __name__ == "__main__":
         run = wandb.init(project=cfg["project"], config=cfg)
         
     valid_split_percentage = cfg["dataset"]["valid_split_percentage"]
+    # Evita la race di download tra processi: scarica solo rank 0, gli altri attendono
+    if is_main:
+        datasets.MNIST(root=cfg["dataset"]["root"], train=True, download=True)
+        datasets.MNIST(root=cfg["dataset"]["root"], train=False, download=True)
+    if ddp:
+        dist.barrier()
     mnist_train = datasets.MNIST(root=cfg["dataset"]["root"], train=True, download=True)
     mnist_test = datasets.MNIST(root=cfg["dataset"]["root"], train=False, download=True)
 
@@ -263,10 +298,13 @@ if __name__ == "__main__":
         generator=torch.Generator().manual_seed(42)
     )
 
+    # Sotto DDP ogni rank vede uno shard (DistributedSampler); altrimenti shuffle classico.
+    train_sampler = DistributedSampler(train_data, shuffle=True, seed=42) if ddp else None
+    val_sampler = DistributedSampler(val_data, shuffle=False) if ddp else None
     train_loader = DataLoader(train_data, batch_size=cfg["dataset"]["batch_size"],
-                              sampler=DistributedSampler(train_data, shuffle=True, seed=42))
+                              sampler=train_sampler, shuffle=(train_sampler is None))
     val_loader = DataLoader(val_data, batch_size=cfg["dataset"]["batch_size"],
-                            sampler=DistributedSampler(val_data, shuffle=False))
+                            sampler=val_sampler, shuffle=False)
     test_loader = DataLoader(X_test, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
 
     weight_dir = os.path.join(os.getcwd(), "best_categorical_miwae.pt")
@@ -296,7 +334,8 @@ if __name__ == "__main__":
 
     symbolic_partition_function = sf.integrate(symbolic_circuit)
 
-    logger.info(f"Circuit built with {len(list(symbolic_circuit.layers))} layers")
+    if is_main:
+        logger.info(f"Circuit built with {len(list(symbolic_circuit.layers))} layers")
 
     max_train_steps = int(len(train_loader) * cfg["training"]["epochs"])
 
@@ -315,7 +354,8 @@ if __name__ == "__main__":
         patience=cfg["training"]["patience"],
         device=device,
         save_path=cfg["training"]["save_path"],
-        log_to_wandb=log_to_wandb
+        log_to_wandb=log_to_wandb,
+        is_main=is_main
     )
 
     torch.cuda.empty_cache()
@@ -333,5 +373,6 @@ if __name__ == "__main__":
         if log_to_wandb:
             run.finish()
 
-    dist.barrier()
-    dist.destroy_process_group()
+    if ddp:
+        dist.barrier()
+        dist.destroy_process_group()
