@@ -3,6 +3,9 @@ import gc
 import yaml
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DistributedSampler
 import numpy as np
 import wandb
 from tqdm.auto import tqdm
@@ -45,6 +48,13 @@ def set_nested_key(d, key_path, value):
 
     sub_dict[keys[-1]] = value
 
+class CircuitNLL(nn.Module):
+    def __init__(self, circuit, partition):
+        super().__init__()
+        self.circuit = circuit
+        self.partition = partition
+    def forward(self, x):
+        return self.circuit(x) - self.partition()
 
 def train_circuit(
     symbolic_circuit,
@@ -73,10 +83,10 @@ def train_circuit(
     circuit = ctx.compile(symbolic_circuit).to(device)
     circuit_partition_function = ctx.compile(symbolic_partition_function).to(device)
 
-    if torch.cuda.device_count() > 1:
-        circuit = nn.DataParallel(circuit)
+    model = CircuitNLL(circuit, circuit_partition_function).to(device)
+    model = DDP(model, device_ids=[device.index])
 
-    optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=1, eta_min=eta_min)
 
     best_val_nll = float("inf")
@@ -88,12 +98,14 @@ def train_circuit(
     while total_steps < max_train_steps:
         train_loss_sum = 0.0
         train_count = 0
-        circuit.train()
+        model.train()
+        if hasattr(train_loader.sampler, "set_epoch"):
+            train_loader.sampler.set_epoch(total_steps)
 
         for batch in tqdm(train_loader, desc="[Train]", leave=False):
             batch = batch.to(device)
 
-            log_liks = circuit(batch) - circuit_partition_function()
+            log_liks = model(batch)
             loss = -log_liks.mean()
 
             optimizer.zero_grad()
@@ -111,18 +123,21 @@ def train_circuit(
             if total_steps % validation_steps == 0:
                 val_loss_sum = 0.0
                 val_count = 0
-                circuit.eval()
+                model.eval()
 
                 with torch.inference_mode():
                     for val_batch in val_loader:
                         val_batch = val_batch.to(device)
-                        log_liks = circuit(val_batch) - circuit_partition_function()
+                        log_liks = model.module(val_batch)
                         val_loss_sum += (-log_liks.mean()).item() * val_batch.size(0)
                         val_count += val_batch.size(0)
 
                         del val_batch, log_liks
 
-                avg_val_nll = val_loss_sum / val_count
+                # all-reduce così ogni rank decide lo stesso early-stop (evita deadlock)
+                stats = torch.tensor([val_loss_sum, float(val_count)], device=device)
+                dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+                avg_val_nll = (stats[0] / stats[1]).item()
                 avg_train_nll = train_loss_sum / train_count
                 bpd_train = avg_train_nll / (28 * 28 * np.log(2.0))
                 bpd_val = avg_val_nll / (28 * 28 * np.log(2.0))
@@ -144,8 +159,8 @@ def train_circuit(
 
                 if avg_val_nll - delta <= best_val_nll:
                     best_val_nll = avg_val_nll
-                    to_save = circuit.module if isinstance(circuit, nn.DataParallel) else circuit
-                    torch.save(to_save.state_dict(), save_path)
+                    if dist.get_rank() == 0:
+                        torch.save(model.module.circuit.state_dict(), save_path)
                     epochs_no_improve = 0
                     logger.success(f"New best model at step {total_steps}, Train NLL: {avg_train_nll:.4f}, Train bpd: {bpd_train:.4f}, Val NLL: {best_val_nll:.4f}, Val bpd: {bpd_val:.4f}")
                 else:
@@ -155,8 +170,8 @@ def train_circuit(
                 if epochs_no_improve >= patience:
                     logger.info("Early stopping triggered.")
                     return circuit, circuit_partition_function, logs
-                
-                circuit.train()
+
+                model.train()
                 
             if total_steps >= max_train_steps:
                 break
@@ -221,10 +236,15 @@ if __name__ == "__main__":
     print("⚙️ Final configuration:")
     print(yaml.dump(cfg, sort_keys=False, default_flow_style=False))
 
-    device = torch.device(cfg["training"]["device"] if torch.cuda.is_available() else "cpu")
+    dist.init_process_group(backend="nccl")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f"cuda:{local_rank}")
+    is_main = dist.get_rank() == 0
 
     use_wandb = cfg["logging"].get("use_wandb", False)
-    if use_wandb:
+    log_to_wandb = use_wandb and is_main
+    if log_to_wandb:
         wandb.login()
         run = wandb.init(project=cfg["project"], config=cfg)
         
@@ -232,8 +252,8 @@ if __name__ == "__main__":
     mnist_train = datasets.MNIST(root=cfg["dataset"]["root"], train=True, download=True)
     mnist_test = datasets.MNIST(root=cfg["dataset"]["root"], train=False, download=True)
 
-    X_train = mnist_train.data.view(-1, 28 * 28).long().to(device)
-    X_test = mnist_test.data.view(-1, 28 * 28).long().to(device)
+    X_train = mnist_train.data.view(-1, 28 * 28).long()
+    X_test = mnist_test.data.view(-1, 28 * 28).long()
  
     n_val = int(len(X_train) * valid_split_percentage)
     n_train = len(X_train) - n_val
@@ -243,8 +263,10 @@ if __name__ == "__main__":
         generator=torch.Generator().manual_seed(42)
     )
 
-    train_loader = DataLoader(train_data, batch_size=cfg["dataset"]["batch_size"], shuffle=True)
-    val_loader = DataLoader(val_data, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
+    train_loader = DataLoader(train_data, batch_size=cfg["dataset"]["batch_size"],
+                              sampler=DistributedSampler(train_data, shuffle=True, seed=42))
+    val_loader = DataLoader(val_data, batch_size=cfg["dataset"]["batch_size"],
+                            sampler=DistributedSampler(val_data, shuffle=False))
     test_loader = DataLoader(X_test, batch_size=cfg["dataset"]["batch_size"], shuffle=False)
 
     weight_dir = os.path.join(os.getcwd(), "best_categorical_miwae.pt")
@@ -260,7 +282,7 @@ if __name__ == "__main__":
         weight_dir=weight_dir
     )
     symbolic_circuit = spn_learner.learn_spn(
-        train_data.dataset,
+        train_data.dataset.to(device),
         input_layer="categorical",
         region_graph=params["region_graph"],
         activation=params["activation"],
@@ -276,7 +298,7 @@ if __name__ == "__main__":
 
     logger.info(f"Circuit built with {len(list(symbolic_circuit.layers))} layers")
 
-    max_train_steps = int(len(train_data) // cfg["dataset"]["batch_size"] * cfg["training"]["epochs"])
+    max_train_steps = int(len(train_loader) * cfg["training"]["epochs"])
 
     circuit, circuit_partition_function, _ = train_circuit(
         symbolic_circuit,
@@ -293,20 +315,23 @@ if __name__ == "__main__":
         patience=cfg["training"]["patience"],
         device=device,
         save_path=cfg["training"]["save_path"],
-        log_to_wandb=use_wandb
+        log_to_wandb=log_to_wandb
     )
 
     torch.cuda.empty_cache()
     gc.collect()
 
-    evaluate_circuit(
-        circuit,
-        circuit_partition_function,
-        test_loader,
-        device=device,
-        checkpoint_path=cfg["training"]["save_path"],
-        log_to_wandb=use_wandb
-    )
+    if is_main:
+        evaluate_circuit(
+            circuit,
+            circuit_partition_function,
+            test_loader,
+            device=device,
+            checkpoint_path=cfg["training"]["save_path"],
+            log_to_wandb=log_to_wandb
+        )
+        if log_to_wandb:
+            run.finish()
 
-    if use_wandb:
-        run.finish()
+    dist.barrier()
+    dist.destroy_process_group()
