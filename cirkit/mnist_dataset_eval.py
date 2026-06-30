@@ -2,6 +2,7 @@ import os
 import gc
 import yaml
 import torch
+import torch.nn as nn
 import numpy as np
 import wandb
 from tqdm.auto import tqdm
@@ -72,6 +73,9 @@ def train_circuit(
     circuit = ctx.compile(symbolic_circuit).to(device)
     circuit_partition_function = ctx.compile(symbolic_partition_function).to(device)
 
+    if torch.cuda.device_count() > 1:
+        circuit = nn.DataParallel(circuit)
+
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=T_0, T_mult=1, eta_min=eta_min)
 
@@ -139,8 +143,9 @@ def train_circuit(
                     })
 
                 if avg_val_nll - delta <= best_val_nll:
-                    best_val_nll = avg_val_nll 
-                    torch.save(circuit.state_dict(), save_path)
+                    best_val_nll = avg_val_nll
+                    to_save = circuit.module if isinstance(circuit, nn.DataParallel) else circuit
+                    torch.save(to_save.state_dict(), save_path)
                     epochs_no_improve = 0
                     logger.success(f"New best model at step {total_steps}, Train NLL: {avg_train_nll:.4f}, Train bpd: {bpd_train:.4f}, Val NLL: {best_val_nll:.4f}, Val bpd: {bpd_val:.4f}")
                 else:
@@ -168,7 +173,8 @@ def evaluate_circuit(
         log_to_wandb=True
         ):
     
-    circuit.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    target = circuit.module if isinstance(circuit, nn.DataParallel) else circuit
+    target.load_state_dict(torch.load(checkpoint_path, map_location=device))
     circuit.eval()
 
     test_nll_sum = 0.0
