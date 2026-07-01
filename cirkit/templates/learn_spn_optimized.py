@@ -305,7 +305,7 @@ class LearnSPN:
             return np.full(num_categories, 1.0 / num_categories, dtype=float)
         col = data[rows, feat_idx]
         counts = torch.bincount(col, minlength=num_categories).float().cpu().numpy()
-        counts = counts + self._alpha_per_bin(num_categories)   # === OPT 6b
+        counts = counts + self._alpha_per_bin(num_categories)
         return counts / counts.sum()
 
     def _leaf_pool_rows(self, instance_ids: LongTensor) -> LongTensor:
