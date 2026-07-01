@@ -66,6 +66,32 @@ class LearnSPN:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+    @staticmethod
+    def _clamp_floor() -> float:
+        # sqrt(tiny) ~ 1.08e-19 per float32: stesso floor usato dal positive-clamp
+        return float(np.sqrt(np.finfo(np.float32).tiny))
+
+    def _to_preactivation(self, probs: np.ndarray, activation: str) -> np.ndarray:
+        """Mappa probabilità in spazio pre-attivazione in base all'attivazione:
+        positive-clamp -> p (lineare), softplus -> log(expm1(p)), altrimenti -> log(p)."""
+        p = np.clip(np.asarray(probs, dtype=float), 1e-12, None)
+        if activation == 'positive-clamp':
+            return p
+        if activation == 'softplus':
+            return np.log(np.expm1(p))
+        return np.log(p)
+
+    def _apply_symmetry_breaking(self, theta: np.ndarray, activation: str) -> np.ndarray:
+        """Rompe la simmetria fra unità senza spingere i pesi fuori dal dominio valido:
+        rumore moltiplicativo positivo in spazio lineare (positive-clamp), additivo altrimenti."""
+        s = self.noise_scale
+        if not s or s <= 0.0:
+            return theta
+        if activation == 'positive-clamp':
+            noisy = theta * np.exp(np.random.normal(loc=0.0, scale=s, size=theta.shape))
+            return np.clip(noisy, self._clamp_floor(), None)
+        return theta + np.random.normal(loc=0.0, scale=s, size=theta.shape)
+
     def learn_spn(
             self,
             data: LongTensor,
@@ -94,18 +120,25 @@ class LearnSPN:
             raise ValueError(f"Unknown region graph called {region_graph}")
         
         activation_dict = {}
+        init_dict = {}
         nary_sum_weight_factory: ParameterFactory
         num_categories = int(data.max().item() + 1)
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
         if activation == 'positive-clamp':
-            activation_dict['vmin'] = np.sqrt(torch.finfo(torch.get_default_dtype()).tiny) 
+            activation_dict['vmin'] = self._clamp_floor()
+            # normal (media 0) è incompatibile col clamp -> ripiego su uniform positivo
+            if weights_init == 'normal':
+                weights_init = 'uniform'
+            if weights_init == 'uniform':
+                init_dict = {'a': 0.01, 'b': 0.99}
 
         if sum_weight_param is None:
             sum_weight_param = Parameterization(
                 activation=activation,
                 initialization=weights_init,
-                activation_kwargs=activation_dict
+                activation_kwargs=activation_dict,
+                initialization_kwargs=init_dict
                 )
         sum_weight_factory = parameterization_to_factory(sum_weight_param)
         
@@ -132,16 +165,18 @@ class LearnSPN:
             sc = self._estimate_parameters(
                 sc,
                 data,
-                activation=activation
+                activation=activation,
+                activation_dict=activation_dict
             )
 
         return sc
-    
+
     def _estimate_parameters(
             self,
             sc: Circuit,
             data: LongTensor,
-            activation: str
+            activation: str,
+            activation_dict: dict
             ) -> Circuit:
         
         visited = set()
@@ -167,7 +202,8 @@ class LearnSPN:
                     data=data,
                     num_input_units=layer.num_output_units,
                     num_categories=layer.num_categories,
-                    activation=activation
+                    activation=activation,
+                    activation_dict=activation_dict
                 )
                 
                 layer.probs=param
@@ -180,7 +216,8 @@ class LearnSPN:
                     clusters=cluster,
                     num_input_units=layer.num_input_units,
                     num_sum_units=(1 if layer_out is None else layer.num_output_units),
-                    activation=activation
+                    activation=activation,
+                    activation_dict=activation_dict
                 )
                 
                 layer.weight=param
@@ -245,7 +282,8 @@ class LearnSPN:
         data: LongTensor,
         num_input_units: int,
         num_categories: int,
-        activation: str
+        activation: str,
+        activation_dict: dict
     ):
         col = data[instance_ids, feat_idx]
         counts = torch.bincount(col, minlength=num_categories).float()
@@ -254,13 +292,12 @@ class LearnSPN:
 
         probs_np = probs.cpu().numpy().astype(float)
 
+        base = self._to_preactivation(probs_np, activation)
         if num_input_units == 1:
-            logits = np.log(probs_np).reshape(1, num_categories)
+            logits = base.reshape(1, num_categories)
         else:
-            base = np.log(probs_np)
             logits = np.tile(base.reshape(1, num_categories), (num_input_units, 1))
-            if self.noise_scale and self.noise_scale > 0.0:
-                logits = logits + np.random.normal(loc=0.0, scale=self.noise_scale, size=logits.shape)
+            logits = self._apply_symmetry_breaking(logits, activation)
 
         tp = TensorParameter(
             num_input_units,
@@ -268,13 +305,9 @@ class LearnSPN:
             initializer=ConstantTensorInitializer(logits),
             learnable=True
             )
-        
-        activation_dict = {}
-        if activation == 'positive-clamp':
-            activation_dict['vmin'] = np.sqrt(torch.finfo(torch.get_default_dtype()).tiny)
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
-  
+
         return Parameter.from_unary(unary_op_factory((num_input_units, num_categories)), tp)
 
     def _make_sum_param_estimated(
@@ -282,8 +315,9 @@ class LearnSPN:
         clusters: List[LongTensor],
         num_input_units: int,
         num_sum_units: int,
-        activation: str
-    ):  
+        activation: str,
+        activation_dict: dict
+    ):
         arity = len(clusters)
         cluster_sizes = [int(c.numel()) for c in clusters]
         smoothed = [sz + self.alpha for sz in cluster_sizes]
@@ -292,15 +326,14 @@ class LearnSPN:
         mix_weights = np.array(weights, dtype=float)
         
         if num_input_units == 1:
-            logits = np.log(mix_weights).reshape(1, arity)
+            logits = self._to_preactivation(mix_weights.reshape(1, arity), activation)
         else:
             rep_weights = np.tile(mix_weights.reshape(1, arity), (num_sum_units, 1))
             rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, arity, 1), (1, 1, num_input_units))
             rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, arity * num_input_units)
-            
-            logits = np.log(rep_weights_flat)
-            if self.noise_scale and self.noise_scale > 0.0:
-                logits = logits + np.random.normal(loc=0.0, scale=self.noise_scale, size=logits.shape)
+
+            logits = self._to_preactivation(rep_weights_flat, activation)
+            logits = self._apply_symmetry_breaking(logits, activation)
 
         tp = TensorParameter(
             num_sum_units,
@@ -308,10 +341,7 @@ class LearnSPN:
             initializer=ConstantTensorInitializer(logits),
             learnable=True
         )
-        activation_dict = {}
-        if activation == 'positive-clamp':
-            activation_dict['vmin'] = np.sqrt(torch.finfo(torch.get_default_dtype()).tiny)
 
         unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
-        
+
         return Parameter.from_unary(unary_op_factory((num_sum_units, num_input_units * arity)), tp)
