@@ -19,7 +19,7 @@ training:
   save_path: "best_circuit.pth"
 
 learn_spn:
-  variant: "base"          # "base" (learn_spn.py) | "optimized" (learn_spn_optimized.py)
+  variant: "base"          
   alpha: 5.0
   noise_scale: 0.5
   use_miwae: false
@@ -32,10 +32,10 @@ learn_spn:
   use_estimated_weights: false
   use_mixing_weights: true
   image_shape: [1, 28, 28]
-  # Parametri usati SOLO dalla variante "optimized" (ignorati da "base"):
-  diversify: "bootstrap"   # "bootstrap" | "subcluster" | "replicate"
-  leaf_pool: "subset"      # "subset" | "global"
+  diversify: "bootstrap"
+  leaf_pool: "subset"
   adaptive_alpha: true
+  subcluster_lambda: 0.7
 
 logging:
   use_wandb: false
