@@ -341,6 +341,7 @@ if __name__ == "__main__":
             diversify=params.get("diversify", "bootstrap"),
             leaf_pool=params.get("leaf_pool", "subset"),
             adaptive_alpha=params.get("adaptive_alpha", True),
+            subcluster_lambda=params.get("subcluster_lambda", 0.7),
         )
 
     if is_main:
