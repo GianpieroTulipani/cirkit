@@ -201,9 +201,7 @@ class LearnSPN:
                     instance_ids=rows_idx,
                     data=data,
                     num_input_units=layer.num_output_units,
-                    num_categories=layer.num_categories,
-                    activation=activation,
-                    activation_dict=activation_dict
+                    num_categories=layer.num_categories
                 )
                 
                 layer.probs=param
@@ -281,10 +279,16 @@ class LearnSPN:
         instance_ids: LongTensor,
         data: LongTensor,
         num_input_units: int,
-        num_categories: int,
-        activation: str,
-        activation_dict: dict
+        num_categories: int
     ):
+        # L'input categorico DEVE restare una distribuzione normalizzata: si usa sempre
+        # softmax, a prescindere dall'attivazione dei pesi sum. Le attivazioni non
+        # normalizzanti (positive-clamp, softplus, sigmoid, none) lascerebbero la
+        # categorica non normalizzata durante il training -> la partition function non la
+        # insegue e il PC diventa improprio (c(x) > Z, NLL/bpd negativa). Questo replica il
+        # default di cirkit (CategoricalLayer -> SoftmaxParameter).
+        input_activation = 'softmax'
+
         col = data[instance_ids, feat_idx]
         counts = torch.bincount(col, minlength=num_categories).float()
         counts += self.alpha
@@ -292,12 +296,12 @@ class LearnSPN:
 
         probs_np = probs.cpu().numpy().astype(float)
 
-        base = self._to_preactivation(probs_np, activation)
+        base = self._to_preactivation(probs_np, input_activation)  # log(p): logits per softmax
         if num_input_units == 1:
             logits = base.reshape(1, num_categories)
         else:
             logits = np.tile(base.reshape(1, num_categories), (num_input_units, 1))
-            logits = self._apply_symmetry_breaking(logits, activation)
+            logits = self._apply_symmetry_breaking(logits, input_activation)
 
         tp = TensorParameter(
             num_input_units,
@@ -306,7 +310,7 @@ class LearnSPN:
             learnable=True
             )
 
-        unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
+        unary_op_factory = name_to_parameter_activation(input_activation)
 
         return Parameter.from_unary(unary_op_factory((num_input_units, num_categories)), tp)
 
