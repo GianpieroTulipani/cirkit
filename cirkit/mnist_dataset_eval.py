@@ -17,8 +17,15 @@ import torch.optim as optim
 
 from cirkit.pipeline import PipelineContext, compile
 import cirkit.symbolic.functional as sf
-from cirkit.templates.learn_spn import LearnSPN
+from cirkit.templates.learn_spn import LearnSPN as LearnSPNBase
+from cirkit.templates.learn_spn_optimized import LearnSPN as LearnSPNOptimized
 import argparse
+
+# Selezione della variante di LearnSPN via config (learn_spn.variant)
+LEARN_SPN_VARIANTS = {
+    "base": LearnSPNBase,
+    "optimized": LearnSPNOptimized,
+}
 
 def set_nested_key(d, key_path, value):
     """
@@ -310,15 +317,36 @@ if __name__ == "__main__":
     weight_dir = os.path.join(os.getcwd(), "best_categorical_miwae.pt")
 
     params = cfg["learn_spn"]
-    spn_learner = LearnSPN(
+
+    # Scelta della variante: "base" (learn_spn.py) o "optimized" (learn_spn_optimized.py).
+    variant = str(params.get("variant", "base")).lower()
+    if variant not in LEARN_SPN_VARIANTS:
+        raise ValueError(
+            f"learn_spn.variant deve essere uno di {list(LEARN_SPN_VARIANTS)}, non {variant!r}"
+        )
+    LearnSPNCls = LEARN_SPN_VARIANTS[variant]
+
+    learner_kwargs = dict(
         alpha=params["alpha"],
         noise_scale=params["noise_scale"],
         use_miwae=params["use_miwae"],
         data_format="image",
         image_shape=tuple(params["image_shape"]),
         device=device,
-        weight_dir=weight_dir
+        weight_dir=weight_dir,
     )
+    # Argomenti extra supportati solo dalla variante optimized (base darebbe TypeError).
+    if variant == "optimized":
+        learner_kwargs.update(
+            diversify=params.get("diversify", "bootstrap"),
+            leaf_pool=params.get("leaf_pool", "subset"),
+            adaptive_alpha=params.get("adaptive_alpha", True),
+        )
+
+    if is_main:
+        logger.info(f"Using LearnSPN variant: {variant}")
+
+    spn_learner = LearnSPNCls(**learner_kwargs)
     symbolic_circuit = spn_learner.learn_spn(
         train_data.dataset.to(device),
         input_layer="categorical",
