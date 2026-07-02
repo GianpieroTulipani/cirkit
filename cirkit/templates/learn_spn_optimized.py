@@ -43,7 +43,7 @@ class LearnSPN:
         diversify: str = "bootstrap",
         leaf_pool: str = "subset",
         adaptive_alpha: bool = True,
-        subcluster_lambda: float = 0.7,
+        subcluster_lambda: float = 0.7
     ):
 
         assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
@@ -205,7 +205,6 @@ class LearnSPN:
 
         visited = set()
         self._all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
-        # Necessari a diversify='subcluster': dati e cache del clustering globale.
         self._data = data
         self._subpop_cache = {}
         queue = deque([(out, self._all_rows) for out in sc.outputs])

@@ -348,8 +348,11 @@ if __name__ == "__main__":
         logger.info(f"Using LearnSPN variant: {variant}")
 
     spn_learner = LearnSPNCls(**learner_kwargs)
+    # Stima l'init SOLO sullo split di train: `train_data.dataset` restituirebbe X_train
+    # intero (train + val), facendo leakare il validation nell'inizializzazione dei pesi.
+    train_split = X_train[torch.as_tensor(train_data.indices)]
     symbolic_circuit = spn_learner.learn_spn(
-        train_data.dataset.to(device),
+        train_split.to(device),
         input_layer="categorical",
         region_graph=params["region_graph"],
         activation=params["activation"],
