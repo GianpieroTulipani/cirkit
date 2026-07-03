@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, random_split
 from torchvision import datasets
 
 try:
-    from tqdm.auto import tqdm
+    
 except Exception:
     def tqdm(x, **kwargs):
         return x
@@ -135,7 +135,6 @@ def train(circuit, partition, sum_params, train_loader, valid_loader, args, devi
 
             total_steps += 1
 
-            # --- validazione periodica -----------------------------------------------
             if total_steps % args.valid_freq == 0:
                 val_nll, val_bpd = evaluate(circuit, partition, valid_loader, device, num_features)
                 train_nll = loss.item()
@@ -150,7 +149,7 @@ def train(circuit, partition, sum_params, train_loader, valid_loader, args, devi
                     epochs_no_improve += 1
                     tag = f"  (no-improve {epochs_no_improve}/{args.patience})"
 
-                print(f"step {total_steps:>6} | train bpd {train_bpd:.4f} | "
+                print(f"step {total_steps:>6} | train NLL {train_nll:.3f} | train bpd {train_bpd:.4f} | "
                       f"val NLL {val_nll:.3f} | val bpd {val_bpd:.4f}{tag}")
 
                 circuit.train()
@@ -208,7 +207,7 @@ def main():
                         help="split per quad-tree (2 = binario, come tenpcs)")
     parser.add_argument("--inner-layer", type=str, default="cp",
                         choices=["cp", "tucker"], help="layer sum-product (paper: CP)")
-    parser.add_argument("--k", type=int, default=256, help="num unita' (input e sum). Paper: 512")
+    parser.add_argument("--k", type=int, default=512, help="num unita' (input e sum). Paper: 512")
     parser.add_argument("--num-categories", type=int, default=256, help="livelli pixel (grigio: 256)")
     parser.add_argument("--weight-mode", type=str, default="clamp",
                         choices=["clamp", "softmax"],
@@ -222,7 +221,7 @@ def main():
     parser.add_argument("--valid-freq", type=int, default=250, help="validazione ogni n step")
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--min-delta", type=float, default=0.0)
-    # dati / sistema
+
     parser.add_argument("--valid-split", type=float, default=0.05)
     parser.add_argument("--data-root", type=str, default="./data")
     parser.add_argument("--save-path", type=str, default="qtcp512_mnist.pt")
