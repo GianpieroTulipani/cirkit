@@ -38,12 +38,9 @@ def build_symbolic_circuit(args):
     else:
         raise ValueError(f"region graph sconosciuto: {args.rg}")
 
-    # --- parametrizzazione dei pesi delle somme --------------------------------------
     if args.weight_mode == "clamp":
-        # Fedele al paper: pesi grezzi positivi, non normalizzati (clamp fatto dopo lo step).
         sum_param = Parameterization(activation="none", initialization="uniform")
     elif args.weight_mode == "softmax":
-        # Idiomatico cirkit: pesi localmente normalizzati via softmax.
         sum_param = Parameterization(activation="softmax", initialization="normal")
     else:
         raise ValueError(f"weight-mode sconosciuto: {args.weight_mode}")
@@ -61,12 +58,11 @@ def build_symbolic_circuit(args):
         "categorical", num_categories=args.num_categories
     )
 
-    # --- assemblaggio -----------------------------------------------------------------
     symbolic_circuit = rg.build_circuit(
         input_factory=input_factory,
-        sum_product=args.inner_layer,          # 'cp' oppure 'tucker'
+        sum_product=args.inner_layer,         
         sum_weight_factory=sum_weight_factory,
-        nary_sum_weight_factory=sum_weight_factory,  # usato solo da quad-graph (mixing)
+        nary_sum_weight_factory=sum_weight_factory,  
         num_input_units=args.k,
         num_sum_units=args.k,
         num_classes=1,
@@ -82,13 +78,13 @@ def build_symbolic_circuit(args):
 def evaluate(circuit, partition, loader, device, num_features):
     circuit.eval()
     total_ll, count = 0.0, 0
-    logZ = partition()  # scalare (log costante di normalizzazione), shape (1, 1)
+    logZ = partition()  
     for batch in loader:
         batch = batch.to(device)
         lls = (circuit(batch) - logZ).flatten()   # (B,)
         total_ll += lls.sum().item()
         count += batch.size(0)
-    mean_ll = total_ll / count                     # log-lik medio per campione (nats)
+    mean_ll = total_ll / count                    
     nll = -mean_ll
     bpd = nll / (LOG2 * num_features)
     return nll, bpd
@@ -179,20 +175,12 @@ def load_mnist(args):
         generator=torch.Generator().manual_seed(args.seed),
     )
 
-    if args.smoke:  # sottoinsieme minuscolo per il test rapido
-        train_data = torch.utils.data.Subset(train_data, list(range(args.batch_size * 4)))
-        val_data = torch.utils.data.Subset(val_data, list(range(args.batch_size)))
-        X_test = X_test[: args.batch_size]
-
     train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True, drop_last=True)
     valid_loader = DataLoader(val_data, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(X_test, batch_size=args.batch_size, shuffle=False)
     return train_loader, valid_loader, test_loader
 
 
-# ====================================================================================
-#  Main
-# ====================================================================================
 def main():
     parser = argparse.ArgumentParser(description="Replica QT-CP-512 (PC non-PIC) su MNIST con cirkit")
     # architettura
@@ -221,15 +209,8 @@ def main():
     parser.add_argument("--data-root", type=str, default="./data")
     parser.add_argument("--save-path", type=str, default="qtcp512_mnist.pt")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default=None, help="cuda / cpu (default: auto)")
-    parser.add_argument("--smoke", action="store_true", help="test rapido di coerenza")
+    parser.add_argument("--device", type=str, default=None, help="cuda / cpu (default: auto)"))
     args = parser.parse_args()
-
-    if args.smoke:
-        args.k = min(args.k, 8)
-        args.max_epochs = 1
-        args.valid_freq = 2
-        args.patience = 10
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -245,9 +226,8 @@ def main():
     print(f"  device: {device}")
     print("=" * 70)
 
-    # dati
     train_loader, valid_loader, test_loader = load_mnist(args)
-    num_features = 28 * 28  # 784 (1 canale)
+    num_features = 28 * 28
 
     # circuito simbolico + funzione di partizione, compilati nello STESSO contesto
     symbolic_circuit = build_symbolic_circuit(args)
@@ -267,10 +247,8 @@ def main():
         for p in layer.parameters()
     ]
 
-    # training
     train(circuit, partition, sum_params, train_loader, valid_loader, args, device, num_features)
 
-    # test sul miglior checkpoint
     circuit.load_state_dict(torch.load(args.save_path, map_location=device))
     test_nll, test_bpd = evaluate(circuit, partition, test_loader, device, num_features)
     print("-" * 70)
