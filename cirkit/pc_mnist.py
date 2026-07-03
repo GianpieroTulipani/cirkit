@@ -7,12 +7,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, random_split
 from torchvision import datasets
-
-try:
-    
-except Exception:
-    def tqdm(x, **kwargs):
-        return x
+from tqdm.auto import tqdm
 
 from cirkit.pipeline import PipelineContext
 import cirkit.symbolic.functional as sf
@@ -236,7 +231,6 @@ def main():
         args.valid_freq = 2
         args.patience = 10
 
-    # seed
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     if torch.cuda.is_available():
