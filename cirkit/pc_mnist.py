@@ -39,7 +39,7 @@ def build_symbolic_circuit(args):
         raise ValueError(f"region graph sconosciuto: {args.rg}")
 
     if args.weight_mode == "clamp":
-        sum_param = Parameterization(activation="none", initialization="uniform")
+        sum_param = Parameterization(activation="positive-clamp", initialization="uniform") #"none"
     elif args.weight_mode == "softmax":
         sum_param = Parameterization(activation="softmax", initialization="normal")
     else:
@@ -119,10 +119,10 @@ def train(circuit, partition, sum_params, train_loader, valid_loader, args, devi
 
             # --- clamp fedele al paper: tieni POSITIVI i pesi delle somme dopo ogni step
             # (solo i pesi sum/CP, NON i logit softmax dell'input categorico).
-            if args.weight_mode == "clamp":
+            """if args.weight_mode == "clamp":
                 with torch.no_grad():
                     for p in sum_params:
-                        p.data.clamp_(min=args.clamp_min)
+                        p.data.clamp_(min=args.clamp_min)"""
 
             total_steps += 1
 
