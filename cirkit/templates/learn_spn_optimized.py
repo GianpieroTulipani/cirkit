@@ -40,15 +40,11 @@ class LearnSPN:
         weight_dir: str = None,
         device: Optional[torch.device] = None,
         data_format: str = None,
-        diversify: str = "bootstrap",
-        leaf_pool: str = "subset",
         adaptive_alpha: bool = True,
         subcluster_lambda: float = 0.7
     ):
 
         assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
-        assert diversify in ('bootstrap', 'subcluster', 'replicate')
-        assert leaf_pool in ('subset', 'global')
         assert 0.0 <= subcluster_lambda <= 1.0, "subcluster_lambda must be in [0, 1]"
 
         self.alpha = alpha
@@ -57,13 +53,10 @@ class LearnSPN:
         self.image_shape = image_shape
         self.data_format = data_format
 
-        self.diversify = diversify
-        self.leaf_pool = leaf_pool
         self.adaptive_alpha = adaptive_alpha
         self.subcluster_lambda = float(subcluster_lambda)
-        self._all_rows: Optional[LongTensor] = None  # popolato in _estimate_parameters
-        # Cache del clustering globale in K sotto-popolazioni (una per ogni K) e dei dati,
-        # usati solo da diversify='subcluster'.
+        self._all_rows: Optional[LongTensor] = None
+
         self._subpop_cache: dict = {}
         self._data: Optional[LongTensor] = None
 
@@ -84,15 +77,12 @@ class LearnSPN:
 
     def _set_seed(self, seed: int):
         torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
         np.random.seed(seed)
-        random.seed(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
     @staticmethod
     def _clamp_floor() -> float:
-        # stesso valore dell'originale: sqrt(tiny) ~ 1.08e-19 per float32
         return float(np.sqrt(np.finfo(np.float32).tiny))
 
     def _activation_kwargs(self, activation: str) -> dict:
