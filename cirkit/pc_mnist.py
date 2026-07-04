@@ -165,8 +165,8 @@ def load_mnist(args):
     mnist_train = datasets.MNIST(root=args.data_root, train=True, download=True)
     mnist_test = datasets.MNIST(root=args.data_root, train=False, download=True)
 
-    X_train = mnist_train.data.view(-1, 28 * 28).long()   # (60000, 784), valori 0-255
-    X_test = mnist_test.data.view(-1, 28 * 28).long()      # (10000, 784)
+    X_train = mnist_train.data.view(-1, 28 * 28).long()
+    X_test = mnist_test.data.view(-1, 28 * 28).long()      
 
     n_val = int(len(X_train) * args.valid_split)
     n_train = len(X_train) - n_val
@@ -209,7 +209,7 @@ def main():
     parser.add_argument("--data-root", type=str, default="./data")
     parser.add_argument("--save-path", type=str, default="qtcp512_mnist.pt")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default=None, help="cuda / cpu (default: auto)"))
+    parser.add_argument("--device", type=str, default=None, help="cuda / cpu (default: auto)")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
