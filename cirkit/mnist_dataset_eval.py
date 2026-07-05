@@ -61,6 +61,11 @@ def train_circuit(
     best_val_nll = float("inf")
     epochs_no_improve = 0
     total_steps = 0
+    avg_train_nll = None
+    avg_val_nll = None
+    bpd_train = None
+    bpd_val = None
+    saved_best = False
 
     logs = {"step": [], "train_nll": [], "val_nll": [], "train_bpd": [], "val_bpd": []}
 
@@ -94,7 +99,8 @@ def train_circuit(
             
             if total_steps % validation_steps == 0:
                 circuit.eval()
-
+                val_loss_sum = 0.0
+                val_count = 0
                 with torch.inference_mode():
                     for val_batch in val_loader:
                         val_batch = val_batch.to(device)
@@ -125,6 +131,7 @@ def train_circuit(
                 if avg_val_nll - delta <= best_val_nll:
                     best_val_nll = avg_val_nll
                     torch.save(circuit.state_dict(), save_path)
+                    saved_best = True
                     epochs_no_improve = 0
                     logger.success(f"New best model at step {total_steps}, Train NLL: {avg_train_nll:.4f}, Train bpd: {bpd_train:.4f}, Val NLL: {best_val_nll:.4f}, Val bpd: {bpd_val:.4f}")
                 else:
@@ -142,8 +149,20 @@ def train_circuit(
                 stop = True
                 break
     
+    if not saved_best:
+        torch.save(circuit.state_dict(), save_path)
+        logger.info(f"No validation checkpoint was saved; saved current model to {save_path}.")
+
     if log_to_wandb:
-        wandb.log({"final_train_nll": avg_train_nll, "final_train_bpd": bpd_train, "final_val_nll": best_val_nll, "final_val_bpd": bpd_val})
+        final_logs = {"saved_best_checkpoint": saved_best}
+        if avg_train_nll is not None:
+            final_logs["final_train_nll"] = avg_train_nll
+            final_logs["final_train_bpd"] = bpd_train
+        if avg_val_nll is not None:
+            final_logs["final_val_nll"] = avg_val_nll
+            final_logs["final_val_bpd"] = bpd_val
+            final_logs["best_val_nll"] = best_val_nll
+        wandb.log(final_logs)
 
 @torch.inference_mode()
 def evaluate_circuit(
@@ -177,19 +196,18 @@ def evaluate_circuit(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train probabilistic circuit on MNIST")
-    parser.add_argument("--rg", type=str, default="quad-tree",
-                        choices=["quad-tree", "quad-graph"], help="region graph")
-    parser.add_argument("--num-patch-splits", type=int, default=2, choices=[2, 4],
-                        help="split for quad-tree")
+    parser.add_argument("--rg", type=str, default="quad-tree-2",
+                        choices=["quad-tree-2", "quad-tree-4", "quad-graph"], help="region graph")
     parser.add_argument("--inner-layer", type=str, default="cp",
                         choices=["cp", "tucker"], help="sum-product layer type")
     parser.add_argument("--k", type=int, default=512, help="num units per layer")
     parser.add_argument("--activation", type=str, default="clamp",
-                        choices=["clamp", "softmax"],
+                        choices=["clamp", "softmax", "none"],
                         help="activation function for sum units")
     parser.add_argument("--weights-init", type=str, default="uniform",
                         choices=["uniform", "normal", "dirichlet"],
                         help="weights initialization for sum units")
+    parser.add_argument("--root", type=str, default="datasets", help="path to MNIST dataset")
     
     parser.add_argument("--lr", type=float, default=0.01, help="learning rate")
     parser.add_argument("--T_0", type=int, default=1, help="T_0 for cosine annealing")
@@ -204,7 +222,6 @@ if __name__ == "__main__":
     parser.add_argument("--use-scheduler", action="store_true", help="use cosine annealing scheduler")
 
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default=None, help="cuda / cpu")
     parser.add_argument("--save-path", type=str, default="best_circuit.pt", help="path to save the best circuit")
     parser.add_argument("--wandb", action="store_true", help="log to wandb")
     parser.add_argument("--project", type=str, default="mnist_pc", help="wandb project name")
@@ -219,8 +236,7 @@ if __name__ == "__main__":
     parser.add_argument("--use-estimated-weights", action="store_true", help="use estimated weights for LearnSPN")
     args = parser.parse_args()
 
-    if torch.cuda.is_available():
-        device = torch.device("cuda" if args.device is None else args.device)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if args.wandb:
         wandb.login()
@@ -269,7 +285,6 @@ if __name__ == "__main__":
             adaptive_alpha=args.adaptive_alpha,
             subcluster_lambda=args.subcluster_lambda,
         )
-
 
     logger.info(f"Using LearnSPN variant: {variant}")
 
@@ -324,7 +339,7 @@ if __name__ == "__main__":
         eta_min=args.eta_min,
         weight_decay=args.weight_decay,
         validation_steps=args.validation_steps,
-        delta=args.delta,
+        delta=args.min_delta,
         patience=args.patience,
         device=device,
         save_path=args.save_path,
