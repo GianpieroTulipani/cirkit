@@ -238,6 +238,12 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    print("=" * 70)
+    for kk, vv in vars(args).items():
+        print(f"  {kk}: {vv}")
+    print(f"  device: {device}")
+    print("=" * 70)
+
     if args.wandb:
         wandb.login()
         run = wandb.init(project=args.project, config=vars(args))
