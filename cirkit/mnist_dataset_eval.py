@@ -232,6 +232,9 @@ if __name__ == "__main__":
     parser.add_argument("--use-miwae", action="store_true", help="use MIWAE for LearnSPN")
     parser.add_argument("--adaptive-alpha", action="store_true", help="use adaptive alpha for LearnSPN optimized variant")
     parser.add_argument("--subcluster-lambda", type=float, default=0.6, help="subcluster lambda for LearnSPN optimized variant")
+    parser.add_argument("--estimated-sum-init", type=str, default="subcluster",
+                        choices=["subcluster", "replicate"],
+                        help="estimated sum weights initialization for LearnSPN optimized variant")
     parser.add_argument("--use-mixing-weights", action="store_true", help="use mixing weights for LearnSPN")
     parser.add_argument("--use-estimated-weights", action="store_true", help="use estimated weights for LearnSPN")
     args = parser.parse_args()
@@ -290,6 +293,7 @@ if __name__ == "__main__":
         learner_kwargs.update(
             adaptive_alpha=args.adaptive_alpha,
             subcluster_lambda=args.subcluster_lambda,
+            estimated_sum_init=args.estimated_sum_init,
         )
 
     logger.info(f"Using LearnSPN variant: {variant}")
