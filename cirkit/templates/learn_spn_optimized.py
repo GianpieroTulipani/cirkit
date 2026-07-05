@@ -1,4 +1,3 @@
-import random
 import functools
 from collections import deque
 from typing import List, Tuple, Optional
@@ -81,18 +80,9 @@ class LearnSPN:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
-    @staticmethod
-    def _clamp_floor() -> float:
-        return float(np.sqrt(np.finfo(np.float32).tiny))
-
-    def _activation_kwargs(self, activation: str) -> dict:
-        if activation == 'positive-clamp':
-            return {'vmin': self._clamp_floor()}
-        return {}
-
     def _to_preactivation(self, probs: np.ndarray, activation: str) -> np.ndarray:
         p = np.clip(np.asarray(probs, dtype=float), 1e-12, None)
-        if activation == 'positive-clamp':
+        if activation == 'clamp':
             return p
         if activation == 'softplus':
             return np.log(np.expm1(p))
@@ -102,8 +92,8 @@ class LearnSPN:
         s = self.noise_scale
         if not s or s <= 0.0:
             return theta
-        if activation == 'positive-clamp':
-            # spazio lineare: rumore moltiplicativo positivo -> resta sopra il floor
+        if activation == 'clamp':
+            # spazio lineare: rumore moltiplicativo positivo
             noisy = theta * np.exp(np.random.normal(loc=0.0, scale=s, size=theta.shape))
             return np.clip(noisy, self._clamp_floor(), None)
         # spazio log: rumore additivo
@@ -130,9 +120,6 @@ class LearnSPN:
         use_mixing_weights: bool = True,
     ) -> Circuit:
 
-        if activation == 'positive-clamp' and weights_init == 'normal':
-            weights_init = 'uniform'   
-
         assert weights_init in ('normal', 'uniform', 'dirichlet', 'None'), (
             "weights_init should be 'normal', 'uniform', 'dirichlet' or 'None'"
         )
@@ -146,19 +133,14 @@ class LearnSPN:
         else:
             raise ValueError(f"Unknown region graph called {region_graph}")
 
-        activation_dict = {}
         nary_sum_weight_factory: ParameterFactory
         num_categories = int(data.max().item() + 1)
         input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
-        if activation == 'positive-clamp':
-            activation_dict['vmin'] = self._clamp_floor()
-
-        if sum_weight_param is None:
+        if activation == 'clamp':
             sum_weight_param = Parameterization(
-                activation=activation,
-                initialization=weights_init,
-                activation_kwargs=activation_dict,
+                activation='none',
+                initialization='uniform',
             )
         sum_weight_factory = parameterization_to_factory(sum_weight_param)
 
@@ -259,12 +241,13 @@ class LearnSPN:
         data: Tensor,
         n_clusters: int = 2,
         mode: str = "euclidean",
+        verbose: int = 0
     ) -> List[LongTensor]:
 
         if instance_ids.numel() == 0:
             return [instance_ids.new_empty((0,), dtype=torch.long) for _ in range(n_clusters)]
 
-        kmeans = KMeans(n_clusters=n_clusters, mode=mode, verbose=0)
+        kmeans = KMeans(n_clusters=n_clusters, mode=mode, verbose=verbose)
 
         if self.use_miwae:
             C, H, W = self.image_shape
@@ -278,12 +261,11 @@ class LearnSPN:
 
             with torch.no_grad():
                 mu, _, _, _ = self.miwae.encoder(imgs) #log_var in pos 2
-                embeddings = mu.detach() #torch.cat([mu, log_var], dim=1).detach()
-
-            labels = kmeans.fit_predict(embeddings)
+                feats = mu.detach() #torch.cat([mu, log_var], dim=1).detach()
         else:
-            sub = data.index_select(0, instance_ids).index_select(1, feat_ids).float()
-            labels = kmeans.fit_predict(sub)
+            feats = data.index_select(0, instance_ids).index_select(1, feat_ids).float()
+            
+        labels = kmeans.fit_predict(feats)
 
         clusters: List[LongTensor] = []
         for c in range(n_clusters):
@@ -306,20 +288,7 @@ class LearnSPN:
         counts = counts + self._alpha_per_bin(num_categories)
         return counts / counts.sum()
 
-    def _leaf_pool_rows(self, instance_ids: LongTensor) -> LongTensor:
-        if self.leaf_pool == 'global' and self._all_rows is not None:
-            return self._all_rows
-        return instance_ids
-
-    # ------------------------------------------------------------------ #
-    # diversify='subcluster': clustering globale in K sotto-popolazioni.
-    # Le K unità di una regione sono le K componenti di una mixture: invece
-    # del bootstrap (la cui diversità svanisce ~1/sqrt(|pool|)), si partiziona
-    # il dataset in K gruppi coerenti e l'unità k prende le statistiche del
-    # gruppo k. Diversità strutturale che scala con K e non dipende da N.
-    # ------------------------------------------------------------------ #
     def _encode_all(self, data: LongTensor, batch: int = 512) -> np.ndarray:
-        """Embedding MIWAE di TUTTE le immagini (a batch), per il clustering globale."""
         C, H, W = self.image_shape
         N = int(data.size(0))
         embs = []
@@ -331,12 +300,12 @@ class LearnSPN:
                 for idx in range(H * W):
                     y, x = self.coords[idx]
                     imgs[:, 0, y, x] = chunk[:, idx].float() / 255.0
-                mu, _, _, _ = self.miwae.encoder(imgs) #log_var in pos 2
-                embs.append(mu.detach().cpu()) #torch.cat([mu, log_var], dim=1).detach().cpu()
+                mu, _, _, _ = self.miwae.encoder(imgs)
+                embs.append(mu.detach().cpu())
         return torch.cat(embs, dim=0).numpy()
+    
 
     def _subpop_labels(self, K: int) -> np.ndarray:
-        """Etichetta di sotto-popolazione (in [0, K)) per ogni riga del dataset, cachata per K."""
         if K in self._subpop_cache:
             return self._subpop_cache[K]
 
@@ -368,45 +337,29 @@ class LearnSPN:
         num_units: int,
         num_categories: int,
     ) -> np.ndarray:
-        if num_units == 1 or self.diversify == 'replicate':
+        
+        if num_units == 1:
             base = self._estimate_marginal(pool, data, feat_idx, num_categories)
             return np.tile(base.reshape(1, -1), (num_units, 1))
 
-        if self.diversify == 'subcluster':
-            # unità k = marginale del pixel sulla sotto-popolazione k del pool,
-            # con shrinkage verso la base per gestire gruppi piccoli.
-            base = self._estimate_marginal(pool, data, feat_idx, num_categories)
-            if pool is None or pool.numel() == 0:
-                return np.tile(base.reshape(1, -1), (num_units, 1))
+        base = self._estimate_marginal(pool, data, feat_idx, num_categories)
+        if pool is None or pool.numel() == 0:
+            return np.tile(base.reshape(1, -1), (num_units, 1))
 
-            subpop = self._subpop_labels(num_units)
-            pool_np = pool.detach().cpu().numpy()
-            pool_sub = subpop[pool_np]
-            lam = self.subcluster_lambda
+        subpop = self._subpop_labels(num_units)
+        pool_np = pool.detach().cpu().numpy()
+        pool_sub = subpop[pool_np]
+        lam = self.subcluster_lambda
 
-            out = np.empty((num_units, num_categories), dtype=float)
-            for k in range(num_units):
-                grp = pool_np[pool_sub == k]
-                if grp.size == 0:
-                    out[k] = base  # sotto-gruppo vuoto -> base informativa
-                else:
-                    sub = torch.as_tensor(grp, dtype=torch.long, device=data.device)
-                    dist_k = self._estimate_marginal(sub, data, feat_idx, num_categories)
-                    out[k] = (1.0 - lam) * base + lam * dist_k
-            return out
-
-        rows = pool.detach().cpu().numpy()
         out = np.empty((num_units, num_categories), dtype=float)
-
-        if rows.size == 0:
-            out[:] = 1.0 / num_categories
-            return out
-
         for k in range(num_units):
-            samp = rows[np.random.randint(0, rows.size, size=rows.size)]
-            sub = torch.as_tensor(samp, dtype=torch.long, device=data.device)
-            out[k] = self._estimate_marginal(sub, data, feat_idx, num_categories)
-
+            grp = pool_np[pool_sub == k]
+            if grp.size == 0:
+                out[k] = base
+            else:
+                sub = torch.as_tensor(grp, dtype=torch.long, device=data.device)
+                dist_k = self._estimate_marginal(sub, data, feat_idx, num_categories)
+                out[k] = (1.0 - lam) * base + lam * dist_k
         return out
 
     def _make_input_param_estimated(
@@ -417,21 +370,14 @@ class LearnSPN:
         num_input_units: int,
         num_categories: int,
     ) -> Parameter:
-
-        # L'input categorico DEVE restare una distribuzione normalizzata: si usa sempre
-        # softmax, a prescindere dall'attivazione dei pesi sum. Le attivazioni non
-        # normalizzanti (positive-clamp, softplus, sigmoid, none) lascerebbero la
-        # categorica non normalizzata durante il training -> la partition function non la
-        # insegue e il PC diventa improprio (c(x) > Z, NLL/bpd negativa). Questo replica il
-        # default di cirkit (CategoricalLayer -> SoftmaxParameter).
+        
         input_activation = 'softmax'
 
-        pool = self._leaf_pool_rows(instance_ids)
         per_unit_probs = self._per_unit_distributions(
-            pool=pool, data=data, feat_idx=feat_idx,
+            pool=instance_ids, data=data, feat_idx=feat_idx,
             num_units=num_input_units, num_categories=num_categories,
         )
-        theta = self._to_preactivation(per_unit_probs, input_activation)   # log(p): logits per softmax
+        theta = self._to_preactivation(per_unit_probs, input_activation)
         theta = self._apply_symmetry_breaking(theta, input_activation)
 
         tp = TensorParameter(
@@ -482,15 +428,14 @@ class LearnSPN:
         clusters: List[LongTensor],
         rows_idx: LongTensor,
         num_sum_units: int,
+        base_mix: np.ndarray,
         arity: int,
     ) -> np.ndarray:
-        # unità k = proporzioni di mixture (sui figli) calcolate sulla sotto-popolazione k,
-        # con shrinkage verso la mixture base.
-        base_mix = self._cluster_mixture_weights(clusters)
+
         if num_sum_units == 1 or rows_idx.numel() == 0:
             return np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
 
-        arity_labels = self._row_cluster_labels(clusters, rows_idx)  # figlio per riga di rows_idx
+        arity_labels = self._row_cluster_labels(clusters, rows_idx)
         rows_np = rows_idx.detach().cpu().numpy()
         subpop = self._subpop_labels(num_sum_units)
         row_sub = subpop[rows_np]
@@ -527,17 +472,13 @@ class LearnSPN:
             unary_op_factory = name_to_parameter_activation(activation, **self._activation_kwargs(activation))
             return Parameter.from_unary(unary_op_factory((1, arity)), tp)
 
-        if self.diversify == 'subcluster':
-            per_unit_mix = self._per_unit_mixtures_subcluster(clusters, rows_idx, num_sum_units, arity)
-        else:
-            labels = self._row_cluster_labels(clusters, rows_idx)
-            per_unit_mix = self._per_unit_mixtures(base_mix, labels, num_sum_units, arity)
+        per_unit_mix = self._per_unit_mixtures_subcluster(clusters, rows_idx, num_sum_units, base_mix, arity)
 
         expanded = np.repeat(per_unit_mix[:, :, None] / num_input_units, num_input_units, axis=2)
         expanded = expanded.reshape(num_sum_units, arity * num_input_units)
 
-        theta = self._to_preactivation(expanded, activation)                  # OPT 1
-        theta = self._apply_symmetry_breaking(theta, activation)              # OPT 4
+        theta = self._to_preactivation(expanded, activation)                  
+        theta = self._apply_symmetry_breaking(theta, activation)             
 
         tp = TensorParameter(
             num_sum_units,

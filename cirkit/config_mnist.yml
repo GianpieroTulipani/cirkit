@@ -32,8 +32,6 @@ learn_spn:
   use_estimated_weights: false
   use_mixing_weights: true
   image_shape: [1, 28, 28]
-  diversify: "bootstrap"
-  leaf_pool: "subset"
   adaptive_alpha: true
   subcluster_lambda: 0.7
 

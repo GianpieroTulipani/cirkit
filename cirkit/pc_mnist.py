@@ -39,7 +39,7 @@ def build_symbolic_circuit(args):
         raise ValueError(f"region graph sconosciuto: {args.rg}")
 
     if args.weight_mode == "clamp":
-        sum_param = Parameterization(activation="positive-clamp", initialization="uniform") #"none"
+        sum_param = Parameterization(activation="none", initialization="uniform")
     elif args.weight_mode == "softmax":
         sum_param = Parameterization(activation="softmax", initialization="normal")
     else:
@@ -119,10 +119,10 @@ def train(circuit, partition, sum_params, train_loader, valid_loader, args, devi
 
             # --- clamp fedele al paper: tieni POSITIVI i pesi delle somme dopo ogni step
             # (solo i pesi sum/CP, NON i logit softmax dell'input categorico).
-            """if args.weight_mode == "clamp":
+            if args.weight_mode == "clamp":
                 with torch.no_grad():
                     for p in sum_params:
-                        p.data.clamp_(min=args.clamp_min)"""
+                        p.data.clamp_(min=args.clamp_min)
 
             total_steps += 1
 
@@ -182,8 +182,7 @@ def load_mnist(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Replica QT-CP-512 (PC non-PIC) su MNIST con cirkit")
-    # architettura
+    parser = argparse.ArgumentParser(description="Replica QT-CP-512 PC on MNIST")
     parser.add_argument("--rg", type=str, default="quad-tree",
                         choices=["quad-tree", "quad-graph"], help="region graph (paper: QT)")
     parser.add_argument("--num-patch-splits", type=int, default=2, choices=[2, 4],
@@ -210,6 +209,7 @@ def main():
     parser.add_argument("--save-path", type=str, default="qtcp512_mnist.pt")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default=None, help="cuda / cpu (default: auto)")
+    
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
