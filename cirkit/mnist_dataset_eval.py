@@ -308,7 +308,6 @@ if __name__ == "__main__":
     symbolic_partition_function = sf.integrate(symbolic_circuit)
 
     logger.info(f"Circuit built with {len(list(symbolic_circuit.layers))} layers")
-    logger.info(f"Number of parameters: {sum(p.numel() for p in symbolic_circuit.parameters())}")
 
     max_train_steps = int(len(train_loader) * args.max_epochs)
 
@@ -321,6 +320,8 @@ if __name__ == "__main__":
 
     circuit = ctx.compile(symbolic_circuit).to(device)
     circuit_partition_function = ctx.compile(symbolic_partition_function).to(device)
+
+    logger.info(f"Number of parameters: {sum(p.numel() for p in circuit.parameters())}")
 
     sum_params = [
         p for layer in circuit.layers if not isinstance(layer, TorchInputLayer)
