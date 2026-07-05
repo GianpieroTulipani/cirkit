@@ -40,11 +40,15 @@ class LearnSPN:
         device: Optional[torch.device] = None,
         data_format: str = None,
         adaptive_alpha: bool = True,
-        subcluster_lambda: float = 0.7
+        subcluster_lambda: float = 0.7,
+        estimated_sum_init: str = "subcluster",
     ):
 
         assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
         assert 0.0 <= subcluster_lambda <= 1.0, "subcluster_lambda must be in [0, 1]"
+        assert estimated_sum_init in ("subcluster", "replicate"), (
+            "estimated_sum_init should be either 'subcluster' or 'replicate'"
+        )
 
         self.alpha = alpha
         self.use_miwae = use_miwae
@@ -54,6 +58,7 @@ class LearnSPN:
 
         self.adaptive_alpha = adaptive_alpha
         self.subcluster_lambda = float(subcluster_lambda)
+        self.estimated_sum_init = estimated_sum_init
         self._all_rows: Optional[LongTensor] = None
 
         self._subpop_cache: dict = {}
@@ -211,6 +216,16 @@ class LearnSPN:
 
             elif isinstance(layer, SumLayer):
                 if isinstance(layer.weight.output, MixingWeightParameter):
+                    feat_ids = torch.tensor(list(sc._scopes[layer]), dtype=torch.long, device=data.device)
+                    clusters = self._cluster_instances(feat_ids, rows_idx, data, len(layer_in))
+
+                    layer.weight = self._make_mixing_weight_param_estimated(
+                        clusters=clusters,
+                        rows_idx=rows_idx,
+                        num_sum_units=layer.num_output_units,
+                        activation=activation,
+                    )
+
                     for child in layer_in:
                         if child not in visited:
                             queue.append((child, rows_idx))
@@ -404,11 +419,19 @@ class LearnSPN:
         return sizes / total
 
     def _row_cluster_labels(self, clusters: List[LongTensor], rows_idx: LongTensor) -> np.ndarray:
-        label_of = {}
+        if rows_idx.numel() == 0:
+            return np.empty((0,), dtype=int)
+
+        num_rows = int(self._data.size(0)) if self._data is not None else int(rows_idx.max().item()) + 1
+        labels = torch.full((num_rows,), -1, dtype=torch.long, device=rows_idx.device)
         for c, ids in enumerate(clusters):
-            for i in ids.tolist():
-                label_of[i] = c
-        return np.array([label_of[int(i)] for i in rows_idx.tolist()], dtype=int)
+            if ids.numel() > 0:
+                labels[ids.to(device=rows_idx.device)] = c
+
+        row_labels = labels[rows_idx]
+        if torch.any(row_labels < 0).item():
+            raise KeyError("Some rows do not belong to any cluster")
+        return row_labels.detach().cpu().numpy().astype(int)
 
     def _per_unit_mixtures(
         self,
@@ -417,7 +440,7 @@ class LearnSPN:
         num_sum_units: int,
         arity: int,
     ) -> np.ndarray:
-        if num_sum_units == 1 or self.diversify == 'replicate' or labels.size == 0:
+        if num_sum_units == 1 or labels.size == 0:
             return np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
 
         a = self._alpha_per_bin(arity)
@@ -482,7 +505,12 @@ class LearnSPN:
                 return Parameter.from_input(tp)
             return Parameter.from_unary(unary_op_factory((1, arity)), tp)
 
-        per_unit_mix = self._per_unit_mixtures_subcluster(clusters, rows_idx, num_sum_units, base_mix, arity)
+        if self.estimated_sum_init == "replicate":
+            per_unit_mix = np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
+        else:
+            per_unit_mix = self._per_unit_mixtures_subcluster(
+                clusters, rows_idx, num_sum_units, base_mix, arity
+            )
 
         expanded = np.repeat(per_unit_mix[:, :, None] / num_input_units, num_input_units, axis=2)
         expanded = expanded.reshape(num_sum_units, arity * num_input_units)
@@ -502,3 +530,45 @@ class LearnSPN:
         if unary_op_factory is None:
             return Parameter.from_input(tp)
         return Parameter.from_unary(unary_op_factory((num_sum_units, num_input_units * arity)), tp)
+
+    def _make_mixing_weight_param_estimated(
+        self,
+        clusters: List[LongTensor],
+        rows_idx: LongTensor,
+        num_sum_units: int,
+        activation: str,
+    ) -> Parameter:
+
+        arity = len(clusters)
+        base_mix = self._cluster_mixture_weights(clusters)
+
+        if activation == 'clamp':
+            activation = 'none'
+
+        if self.estimated_sum_init == "replicate":
+            per_unit_mix = np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
+        else:
+            per_unit_mix = self._per_unit_mixtures_subcluster(
+                clusters, rows_idx, num_sum_units, base_mix, arity
+            )
+
+        theta = self._to_preactivation(per_unit_mix, activation)
+        theta = self._apply_symmetry_breaking(theta, activation)
+
+        tp = TensorParameter(
+            num_sum_units,
+            arity,
+            initializer=ConstantTensorInitializer(theta),
+            learnable=True,
+        )
+
+        unary_op_factory = name_to_parameter_activation(activation)
+        if unary_op_factory is None:
+            mixing_param = Parameter.from_input(tp)
+        else:
+            mixing_param = Parameter.from_unary(unary_op_factory((num_sum_units, arity)), tp)
+
+        return Parameter.from_unary(
+            MixingWeightParameter((num_sum_units, arity)),
+            mixing_param,
+        )
