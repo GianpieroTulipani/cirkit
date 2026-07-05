@@ -82,7 +82,7 @@ class LearnSPN:
 
     def _to_preactivation(self, probs: np.ndarray, activation: str) -> np.ndarray:
         p = np.clip(np.asarray(probs, dtype=float), 1e-12, None)
-        if activation == 'clamp':
+        if activation == 'clamp' or activation == 'none':
             return p
         if activation == 'softplus':
             return np.log(np.expm1(p))
@@ -92,10 +92,10 @@ class LearnSPN:
         s = self.noise_scale
         if not s or s <= 0.0:
             return theta
-        if activation == 'clamp':
+        if activation == 'clamp' or activation == 'none':
             # spazio lineare: rumore moltiplicativo positivo
             noisy = theta * np.exp(np.random.normal(loc=0.0, scale=s, size=theta.shape))
-            return np.clip(noisy, self._clamp_floor(), None)
+            return np.clip(noisy, float(np.sqrt(np.finfo(np.float32).tiny)), None)
         # spazio log: rumore additivo
         return theta + np.random.normal(loc=0.0, scale=s, size=theta.shape)
 
@@ -141,6 +141,11 @@ class LearnSPN:
             sum_weight_param = Parameterization(
                 activation='none',
                 initialization='uniform',
+            )
+        else:
+            sum_weight_param = Parameterization(
+                activation=activation,
+                initialization=weights_init,
             )
         sum_weight_factory = parameterization_to_factory(sum_weight_param)
 
@@ -386,7 +391,7 @@ class LearnSPN:
             initializer=ConstantTensorInitializer(theta),
             learnable=True,
         )
-        unary_op_factory = name_to_parameter_activation(input_activation, **self._activation_kwargs(input_activation))
+        unary_op_factory = name_to_parameter_activation(input_activation)
         return Parameter.from_unary(unary_op_factory((num_input_units, num_categories)), tp)
 
 
@@ -465,11 +470,16 @@ class LearnSPN:
         arity = len(clusters)
         base_mix = self._cluster_mixture_weights(clusters)
 
+        if activation == 'clamp':
+            activation = 'none'
+
         if num_sum_units == 1 and num_input_units == 1:
             theta = self._to_preactivation(base_mix.reshape(1, arity), activation)
             theta = self._apply_symmetry_breaking(theta, activation)
             tp = TensorParameter(1, arity, initializer=ConstantTensorInitializer(theta), learnable=True)
-            unary_op_factory = name_to_parameter_activation(activation, **self._activation_kwargs(activation))
+            unary_op_factory = name_to_parameter_activation(activation)
+            if unary_op_factory is None:
+                return Parameter.from_input(tp)
             return Parameter.from_unary(unary_op_factory((1, arity)), tp)
 
         per_unit_mix = self._per_unit_mixtures_subcluster(clusters, rows_idx, num_sum_units, base_mix, arity)
@@ -486,5 +496,9 @@ class LearnSPN:
             initializer=ConstantTensorInitializer(theta),
             learnable=True,
         )
-        unary_op_factory = name_to_parameter_activation(activation, **self._activation_kwargs(activation))
+
+        unary_op_factory = name_to_parameter_activation(activation)
+
+        if unary_op_factory is None:
+            return Parameter.from_input(tp)
         return Parameter.from_unary(unary_op_factory((num_sum_units, num_input_units * arity)), tp)
