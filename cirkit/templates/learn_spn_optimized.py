@@ -215,7 +215,7 @@ class LearnSPN:
                 layer.probs = param
 
             elif isinstance(layer, SumLayer):
-                if isinstance(layer.weight.output, MixingWeightParameter):
+                """if isinstance(layer.weight.output, MixingWeightParameter):
                     feat_ids = torch.tensor(list(sc._scopes[layer]), dtype=torch.long, device=data.device)
                     clusters = self._cluster_instances(feat_ids, rows_idx, data, len(layer_in))
 
@@ -229,7 +229,7 @@ class LearnSPN:
                     for child in layer_in:
                         if child not in visited:
                             queue.append((child, rows_idx))
-                    continue
+                    continue"""
 
                 feat_ids = torch.tensor(list(sc._scopes[layer]), dtype=torch.long, device=data.device)
                 clusters = self._cluster_instances(feat_ids, rows_idx, data, len(layer_in))
@@ -393,11 +393,19 @@ class LearnSPN:
         
         input_activation = 'softmax'
 
-        per_unit_probs = self._per_unit_distributions(
+        """per_unit_probs = self._per_unit_distributions(
             pool=instance_ids, data=data, feat_idx=feat_idx,
             num_units=num_input_units, num_categories=num_categories,
-        )
-        theta = self._to_preactivation(per_unit_probs, input_activation)
+        )"""
+
+        probs = self._estimate_marginal(instance_ids, data, feat_idx, num_categories)
+
+        if num_input_units == 1:
+            logits = probs.reshape(1, -1)
+        else:
+            logits = np.tile(probs.reshape(1, -1), (num_input_units, 1))
+
+        theta = self._to_preactivation(logits, input_activation)
         theta = self._apply_symmetry_breaking(theta, input_activation)
 
         tp = TensorParameter(
@@ -547,6 +555,7 @@ class LearnSPN:
 
         if self.estimated_sum_init == "replicate":
             per_unit_mix = np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
+            per_unit_mix = per_unit_mix.reshape(num_sum_units, arity * num_sum_units)
         else:
             per_unit_mix = self._per_unit_mixtures_subcluster(
                 clusters, rows_idx, num_sum_units, base_mix, arity
