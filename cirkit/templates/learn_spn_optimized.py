@@ -304,6 +304,7 @@ class LearnSPN:
 
         if num_input_units == 1:
             logits = probs.reshape(1, -1)
+        else:
             logits = np.tile(probs.reshape(1, -1), (num_input_units, 1))
 
         theta = self._to_preactivation(logits, input_activation)
