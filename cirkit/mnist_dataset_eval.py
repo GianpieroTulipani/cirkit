@@ -2,9 +2,6 @@ import os
 import gc
 import torch
 import torch.nn as nn
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DistributedSampler
 import numpy as np
 import wandb
 from tqdm.auto import tqdm
@@ -13,7 +10,7 @@ from torch.utils.data import DataLoader
 from loguru import logger
 import torch.optim as optim
 
-from cirkit.pipeline import PipelineContext, compile
+from cirkit.pipeline import PipelineContext
 import cirkit.symbolic.functional as sf
 from cirkit.backend.torch.layers import TorchInputLayer
 from cirkit.templates.learn_spn import LearnSPN as LearnSPNBase
@@ -81,6 +78,7 @@ def train_circuit(
 
             log_liks = (circuit(batch) - partition_function()).flatten()
             loss = -log_liks.mean()
+
             train_loss_sum += loss.item() * batch.size(0)
             train_count += batch.size(0)
 
