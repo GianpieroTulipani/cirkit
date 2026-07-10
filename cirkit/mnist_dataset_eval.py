@@ -287,9 +287,7 @@ if __name__ == "__main__":
 
     if variant == "optimized":
         learner_kwargs.update(
-            adaptive_alpha=args.adaptive_alpha,
-            subcluster_lambda=args.subcluster_lambda,
-            estimated_sum_init=args.estimated_sum_init,
+            adaptive_alpha=args.adaptive_alpha
         )
 
     logger.info(f"Using LearnSPN variant: {variant}")
