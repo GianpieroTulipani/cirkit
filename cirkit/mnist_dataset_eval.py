@@ -202,7 +202,7 @@ if __name__ == "__main__":
                         choices=["cp", "tucker"], help="sum-product layer type")
     parser.add_argument("--k", type=int, default=512, help="num units per layer")
     parser.add_argument("--activation", type=str, default="clamp",
-                        choices=["clamp", "softmax", "none"],
+                        choices=["clamp", "softmax", "softplus", "sigmoid", "none"],
                         help="activation function for sum units")
     parser.add_argument("--weights-init", type=str, default="uniform",
                         choices=["uniform", "normal", "dirichlet"],
