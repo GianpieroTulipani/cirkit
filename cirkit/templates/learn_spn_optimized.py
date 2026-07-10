@@ -351,13 +351,8 @@ class LearnSPN:
             if unary_op_factory is None:
                 return Parameter.from_input(tp)
             return Parameter.from_unary(unary_op_factory((1, arity)), tp)
-
-        if self.estimated_sum_init == "replicate":
-            per_unit_mix = np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
-        else:
-            per_unit_mix = self._per_unit_mixtures_subcluster(
-                clusters, rows_idx, num_sum_units, base_mix, arity
-            )
+        
+        per_unit_mix = np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
 
         expanded = np.repeat(per_unit_mix[:, :, None] / num_input_units, num_input_units, axis=2)
         expanded = expanded.reshape(num_sum_units, arity * num_input_units)
