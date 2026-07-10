@@ -15,8 +15,7 @@ from cirkit.symbolic.parameters import (
     TensorParameter,
     Parameter,
     ParameterFactory,
-    MixingWeightParameter,
-    mixing_weight_factory,
+    mixing_weight_factory
 )
 from cirkit.symbolic.initializers import ConstantTensorInitializer
 from cirkit.templates.utils import (
@@ -39,16 +38,12 @@ class LearnSPN:
         weight_dir: str = None,
         device: Optional[torch.device] = None,
         data_format: str = None,
-        adaptive_alpha: bool = True,
-        subcluster_lambda: float = 0.7,
-        estimated_sum_init: str = "subcluster",
+        adaptive_alpha: bool = True
     ):
 
         assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
-        assert 0.0 <= subcluster_lambda <= 1.0, "subcluster_lambda must be in [0, 1]"
-        assert estimated_sum_init in ("subcluster", "replicate"), (
-            "estimated_sum_init should be either 'subcluster' or 'replicate'"
-        )
+        assert noise_scale >= 0, "noise_scale should be non-negative"
+        assert alpha >= 0, "alpha should be non-negative"
 
         self.alpha = alpha
         self.use_miwae = use_miwae
@@ -57,12 +52,8 @@ class LearnSPN:
         self.data_format = data_format
 
         self.adaptive_alpha = adaptive_alpha
-        self.subcluster_lambda = float(subcluster_lambda)
-        self.estimated_sum_init = estimated_sum_init
-        self._all_rows: Optional[LongTensor] = None
-
-        self._subpop_cache: dict = {}
         self._data: Optional[LongTensor] = None
+        self._all_rows: Optional[LongTensor] = None
 
         self.device = device if device is not None else (torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
@@ -86,17 +77,22 @@ class LearnSPN:
             torch.cuda.manual_seed_all(seed)
 
     def _to_preactivation(self, probs: np.ndarray, activation: str) -> np.ndarray:
-        p = np.clip(np.asarray(probs, dtype=float), 1e-12, None)
         if activation == 'clamp' or activation == 'none':
-            return p
+            return probs
+
         if activation == 'softplus':
+            p = np.clip(probs, 1e-12, None)
             return np.log(np.expm1(p))
+
+        if activation == 'sigmoid':
+            p = np.clip(probs, 1e-12, 1 - 1e-12)
+            return np.log(p / (1 - p))
+
+        p = np.clip(probs, 1e-12, None)
         return np.log(p)
 
     def _apply_symmetry_breaking(self, theta: np.ndarray, activation: str) -> np.ndarray:
         s = self.noise_scale
-        if not s or s <= 0.0:
-            return theta
         if activation == 'clamp' or activation == 'none':
             # spazio lineare: rumore moltiplicativo positivo
             noisy = theta * np.exp(np.random.normal(loc=0.0, scale=s, size=theta.shape))
@@ -215,22 +211,6 @@ class LearnSPN:
                 layer.probs = param
 
             elif isinstance(layer, SumLayer):
-                """if isinstance(layer.weight.output, MixingWeightParameter):
-                    feat_ids = torch.tensor(list(sc._scopes[layer]), dtype=torch.long, device=data.device)
-                    clusters = self._cluster_instances(feat_ids, rows_idx, data, len(layer_in))
-
-                    layer.weight = self._make_mixing_weight_param_estimated(
-                        clusters=clusters,
-                        rows_idx=rows_idx,
-                        num_sum_units=layer.num_output_units,
-                        activation=activation,
-                    )
-
-                    for child in layer_in:
-                        if child not in visited:
-                            queue.append((child, rows_idx))
-                    continue"""
-
                 feat_ids = torch.tensor(list(sc._scopes[layer]), dtype=torch.long, device=data.device)
                 clusters = self._cluster_instances(feat_ids, rows_idx, data, len(layer_in))
 
@@ -307,80 +287,7 @@ class LearnSPN:
         counts = torch.bincount(col, minlength=num_categories).float().cpu().numpy()
         counts = counts + self._alpha_per_bin(num_categories)
         return counts / counts.sum()
-
-    def _encode_all(self, data: LongTensor, batch: int = 512) -> np.ndarray:
-        C, H, W = self.image_shape
-        N = int(data.size(0))
-        embs = []
-        with torch.no_grad():
-            for s in range(0, N, batch):
-                chunk = data[s: s + batch]
-                n = int(chunk.size(0))
-                imgs = torch.zeros((n, C, H, W), device=self.device, dtype=torch.float32)
-                for idx in range(H * W):
-                    y, x = self.coords[idx]
-                    imgs[:, 0, y, x] = chunk[:, idx].float() / 255.0
-                mu, _, _, _ = self.miwae.encoder(imgs)
-                embs.append(mu.detach().cpu())
-        return torch.cat(embs, dim=0).numpy()
     
-
-    def _subpop_labels(self, K: int) -> np.ndarray:
-        if K in self._subpop_cache:
-            return self._subpop_cache[K]
-
-        data = self._data
-        assert data is not None, "_subpop_labels richiede _data (impostato in _estimate_parameters)"
-        N = int(data.size(0))
-        Keff = max(1, min(K, N))
-
-        if Keff == 1:
-            labels = np.zeros(N, dtype=int)
-        else:
-            if self.use_miwae:
-                feats = torch.as_tensor(
-                    self._encode_all(data), dtype=torch.float32, device=self.device
-                )
-            else:
-                feats = data.float()
-            km = KMeans(n_clusters=Keff, mode="euclidean", verbose=0)
-            labels = km.fit_predict(feats).detach().cpu().numpy().astype(int)
-
-        self._subpop_cache[K] = labels
-        return labels
-
-    def _per_unit_distributions(
-        self,
-        pool: LongTensor,
-        data: LongTensor,
-        feat_idx: int,
-        num_units: int,
-        num_categories: int,
-    ) -> np.ndarray:
-        
-        if num_units == 1:
-            base = self._estimate_marginal(pool, data, feat_idx, num_categories)
-            return np.tile(base.reshape(1, -1), (num_units, 1))
-
-        base = self._estimate_marginal(pool, data, feat_idx, num_categories)
-        if pool is None or pool.numel() == 0:
-            return np.tile(base.reshape(1, -1), (num_units, 1))
-
-        subpop = self._subpop_labels(num_units)
-        pool_np = pool.detach().cpu().numpy()
-        pool_sub = subpop[pool_np]
-        lam = self.subcluster_lambda
-
-        out = np.empty((num_units, num_categories), dtype=float)
-        for k in range(num_units):
-            grp = pool_np[pool_sub == k]
-            if grp.size == 0:
-                out[k] = base
-            else:
-                sub = torch.as_tensor(grp, dtype=torch.long, device=data.device)
-                dist_k = self._estimate_marginal(sub, data, feat_idx, num_categories)
-                out[k] = (1.0 - lam) * base + lam * dist_k
-        return out
 
     def _make_input_param_estimated(
         self,
@@ -393,16 +300,10 @@ class LearnSPN:
         
         input_activation = 'softmax'
 
-        """per_unit_probs = self._per_unit_distributions(
-            pool=instance_ids, data=data, feat_idx=feat_idx,
-            num_units=num_input_units, num_categories=num_categories,
-        )"""
-
         probs = self._estimate_marginal(instance_ids, data, feat_idx, num_categories)
 
         if num_input_units == 1:
             logits = probs.reshape(1, -1)
-        else:
             logits = np.tile(probs.reshape(1, -1), (num_input_units, 1))
 
         theta = self._to_preactivation(logits, input_activation)
@@ -426,68 +327,6 @@ class LearnSPN:
             return np.full(len(clusters), 1.0 / len(clusters), dtype=float)
         return sizes / total
 
-    def _row_cluster_labels(self, clusters: List[LongTensor], rows_idx: LongTensor) -> np.ndarray:
-        if rows_idx.numel() == 0:
-            return np.empty((0,), dtype=int)
-
-        num_rows = int(self._data.size(0)) if self._data is not None else int(rows_idx.max().item()) + 1
-        labels = torch.full((num_rows,), -1, dtype=torch.long, device=rows_idx.device)
-        for c, ids in enumerate(clusters):
-            if ids.numel() > 0:
-                labels[ids.to(device=rows_idx.device)] = c
-
-        row_labels = labels[rows_idx]
-        if torch.any(row_labels < 0).item():
-            raise KeyError("Some rows do not belong to any cluster")
-        return row_labels.detach().cpu().numpy().astype(int)
-
-    def _per_unit_mixtures(
-        self,
-        base_mix: np.ndarray,
-        labels: np.ndarray,
-        num_sum_units: int,
-        arity: int,
-    ) -> np.ndarray:
-        if num_sum_units == 1 or labels.size == 0:
-            return np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
-
-        a = self._alpha_per_bin(arity)
-        out = np.empty((num_sum_units, arity), dtype=float)
-        for k in range(num_sum_units):
-            samp = labels[np.random.randint(0, labels.size, size=labels.size)]
-            counts = np.bincount(samp, minlength=arity).astype(float) + a
-            out[k] = counts / counts.sum()
-        return out
-
-    def _per_unit_mixtures_subcluster(
-        self,
-        clusters: List[LongTensor],
-        rows_idx: LongTensor,
-        num_sum_units: int,
-        base_mix: np.ndarray,
-        arity: int,
-    ) -> np.ndarray:
-
-        if num_sum_units == 1 or rows_idx.numel() == 0:
-            return np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
-
-        arity_labels = self._row_cluster_labels(clusters, rows_idx)
-        rows_np = rows_idx.detach().cpu().numpy()
-        subpop = self._subpop_labels(num_sum_units)
-        row_sub = subpop[rows_np]
-
-        a = self._alpha_per_bin(arity)
-        lam = self.subcluster_lambda
-        out = np.empty((num_sum_units, arity), dtype=float)
-        for k in range(num_sum_units):
-            mask = row_sub == k
-            if not mask.any():
-                out[k] = base_mix
-            else:
-                counts = np.bincount(arity_labels[mask], minlength=arity).astype(float) + a
-                mix_k = counts / counts.sum()
-                out[k] = (1.0 - lam) * base_mix + lam * mix_k
-        return out
 
     def _make_sum_param_estimated(
         self,
@@ -538,46 +377,3 @@ class LearnSPN:
         if unary_op_factory is None:
             return Parameter.from_input(tp)
         return Parameter.from_unary(unary_op_factory((num_sum_units, num_input_units * arity)), tp)
-
-    def _make_mixing_weight_param_estimated(
-        self,
-        clusters: List[LongTensor],
-        rows_idx: LongTensor,
-        num_sum_units: int,
-        activation: str,
-    ) -> Parameter:
-
-        arity = len(clusters)
-        base_mix = self._cluster_mixture_weights(clusters)
-
-        if activation == 'clamp':
-            activation = 'none'
-
-        if self.estimated_sum_init == "replicate":
-            per_unit_mix = np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
-            per_unit_mix = per_unit_mix.reshape(num_sum_units, arity * num_sum_units)
-        else:
-            per_unit_mix = self._per_unit_mixtures_subcluster(
-                clusters, rows_idx, num_sum_units, base_mix, arity
-            )
-
-        theta = self._to_preactivation(per_unit_mix, activation)
-        theta = self._apply_symmetry_breaking(theta, activation)
-
-        tp = TensorParameter(
-            num_sum_units,
-            arity,
-            initializer=ConstantTensorInitializer(theta),
-            learnable=True,
-        )
-
-        unary_op_factory = name_to_parameter_activation(activation)
-        if unary_op_factory is None:
-            mixing_param = Parameter.from_input(tp)
-        else:
-            mixing_param = Parameter.from_unary(unary_op_factory((num_sum_units, arity)), tp)
-
-        return Parameter.from_unary(
-            MixingWeightParameter((num_sum_units, arity)),
-            mixing_param,
-        )
