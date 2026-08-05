@@ -281,7 +281,6 @@ class LearnSPN:
 
                 param = self._make_sum_param_estimated(
                     clusters=clusters,
-                    rows_idx=rows_idx,
                     num_input_units=layer.num_input_units,
                     num_sum_units=(1 if layer_out is None else layer.num_output_units),
                     activation=activation,
@@ -409,7 +408,6 @@ class LearnSPN:
     def _make_sum_param_estimated(
         self,
         clusters: List[LongTensor],
-        rows_idx: LongTensor,
         num_input_units: int,
         num_sum_units: int,
         activation: str,
