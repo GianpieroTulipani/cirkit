@@ -537,7 +537,7 @@ class TorchMultichannelCategoricalLayer(TorchExpFamilyLayer):
                 size=(self.num_folds, 1, self.num_output_units), device=self.probs.device
             )
         logits = self.logits()
-        return torch.logsumexp(logits, dim=3).sum(dim=2).unsqueeze(1)
+        return torch.logsumexp(logits, dim=3).sum(dim=2)
 
 
 class TorchBinomialLayer(TorchExpFamilyLayer):
