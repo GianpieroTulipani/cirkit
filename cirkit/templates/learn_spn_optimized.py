@@ -354,7 +354,7 @@ class LearnSPN:
     ) -> np.ndarray:
         if rows is None or len(rows) == 0:
             return np.full(num_categories, 1.0 / num_categories, dtype=float)
-        values = data[rows, feat_idx]
+        values = data[rows, feat_idx].long()
         counts = torch.bincount(values, minlength=num_categories).float().cpu().numpy()
         counts = counts + self._alpha_per_bin(num_categories)
         return counts / counts.sum()
@@ -367,7 +367,7 @@ class LearnSPN:
     ) -> np.ndarray:
         if rows is None or len(rows) == 0:
             return np.full(num_categories, 1.0 / num_categories, dtype=float)
-        values = data.index_select(0, rows).reshape(-1)
+        values = data.index_select(0, rows).reshape(-1).long()
         counts = torch.bincount(values, minlength=num_categories).float().cpu().numpy()
         counts = counts + self._alpha_per_bin(num_categories)
         return counts / counts.sum()
@@ -392,7 +392,7 @@ class LearnSPN:
         for channel in range(num_channels):
             start = channel * num_pixels
             stop = start + num_pixels
-            values = data_rows[:, start:stop].reshape(-1)
+            values = data_rows[:, start:stop].reshape(-1).long()
             counts = torch.bincount(values, minlength=num_categories).float().cpu().numpy()
             counts = counts + self._alpha_per_bin(num_categories)
             marginals.append(counts / counts.sum())

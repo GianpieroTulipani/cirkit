@@ -27,6 +27,10 @@ except ImportError:
         def info(message):
             print(message)
 
+        @staticmethod
+        def success(message):
+            print(message)
+
     logger = _Logger()
 
 import cirkit.symbolic.functional as sf
@@ -84,7 +88,7 @@ def apply_color_transform(images: torch.Tensor, ycc: str) -> torch.Tensor:
 
 def flatten_images(images: torch.Tensor, ycc: str) -> torch.Tensor:
     images = apply_color_transform(images, ycc)
-    return images.reshape(images.size(0), -1).long()
+    return images.reshape(images.size(0), -1).to(torch.uint8)
 
 
 def _infer_flat_shape(data: torch.Tensor, image_shape: tuple[int, int, int] | None) -> tuple[int, int, int]:
@@ -107,7 +111,7 @@ def _load_tensor_file(path: Path) -> torch.Tensor:
         tensor = tensor.tensors[0]
     if not isinstance(tensor, torch.Tensor):
         raise TypeError(f"Expected a torch.Tensor in {path}, found {type(tensor).__name__}")
-    return tensor.long()
+    return tensor
 
 
 def _load_local_tensor_dataset(
@@ -193,7 +197,15 @@ def load_discrete_image_dataset(args) -> tuple[torch.Tensor, torch.Tensor, torch
         train = train[torch.as_tensor(train_subset.indices)]
         valid = train_subset.dataset[torch.as_tensor(val_subset.indices)]
 
-    return train.long(), valid.long(), test.long(), shape
+    return train.to(torch.uint8), valid.to(torch.uint8), test.to(torch.uint8), shape
+
+
+def limit_samples(data: torch.Tensor, max_samples: int | None, seed: int) -> torch.Tensor:
+    if max_samples is None or max_samples <= 0 or max_samples >= len(data):
+        return data
+    generator = torch.Generator().manual_seed(seed)
+    indices = torch.randperm(len(data), generator=generator)[:max_samples]
+    return data[indices]
 
 
 def train_circuit(
@@ -240,7 +252,7 @@ def train_circuit(
         train_loss_sum = 0.0
         train_count = 0
         for (batch,) in tqdm(train_loader, desc="[Train]", leave=False):
-            batch = batch.to(device)
+            batch = batch.to(device).long()
 
             log_liks = (circuit(batch) - partition_function()).flatten()
             loss = -log_liks.mean()
@@ -267,7 +279,7 @@ def train_circuit(
                 val_count = 0
                 with torch.inference_mode():
                     for (val_batch,) in val_loader:
-                        val_batch = val_batch.to(device)
+                        val_batch = val_batch.to(device).long()
                         log_liks = (circuit(val_batch) - partition_function()).flatten()
                         val_loss_sum += (-log_liks.mean()).item() * val_batch.size(0)
                         val_count += val_batch.size(0)
@@ -346,7 +358,7 @@ def evaluate_circuit(
     test_count = 0
 
     for (batch,) in tqdm(test_loader, desc="[Test]", leave=False):
-        batch = batch.to(device)
+        batch = batch.to(device).long()
         log_liks = circuit(batch) - circuit_partition_function()
         loss = -log_liks.mean()
         test_nll_sum += loss.item() * batch.size(0)
@@ -399,6 +411,15 @@ if __name__ == "__main__":
     parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--max-epochs", type=int, default=200)
+    parser.add_argument("--max-train-samples", type=int, default=None, help="limit training samples after loading")
+    parser.add_argument("--max-val-samples", type=int, default=None, help="limit validation samples after loading")
+    parser.add_argument("--max-test-samples", type=int, default=None, help="limit test samples after loading")
+    parser.add_argument(
+        "--structure-samples",
+        type=int,
+        default=None,
+        help="number of training samples used to build and estimate the initial circuit",
+    )
     parser.add_argument("--validation-steps", type=int, default=250, help="validation every n steps")
     parser.add_argument("--patience", type=int, default=5)
     parser.add_argument("--min-delta", type=float, default=0.0)
@@ -436,6 +457,9 @@ if __name__ == "__main__":
         run = wandb.init(project=args.project, config=vars(args))
 
     X_train, X_val, X_test, image_shape = load_discrete_image_dataset(args)
+    X_train = limit_samples(X_train, args.max_train_samples, args.seed)
+    X_val = limit_samples(X_val, args.max_val_samples, args.seed + 1)
+    X_test = limit_samples(X_test, args.max_test_samples, args.seed + 2)
     logger.info(f"Loaded {args.dataset}: train={tuple(X_train.shape)}, val={tuple(X_val.shape)}, test={tuple(X_test.shape)}")
     logger.info(f"Using image_shape={image_shape}, ycc={args.ycc}, input_sharing={args.input_sharing}")
 
@@ -474,9 +498,11 @@ if __name__ == "__main__":
 
     logger.info(f"Using LearnSPN variant: {variant}")
     spn_learner = LearnSPNCls(**learner_kwargs)
+    structure_data = limit_samples(X_train, args.structure_samples, args.seed + 3)
+    logger.info(f"Using {len(structure_data)} samples to build/estimate the circuit")
 
     symbolic_circuit = spn_learner.learn_spn(
-        X_train.to(device),
+        structure_data.to(device),
         input_layer="categorical",
         region_graph=args.rg,
         activation=args.activation,
