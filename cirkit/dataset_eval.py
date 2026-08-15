@@ -1,6 +1,5 @@
 import os
 import gc
-import wandb
 import argparse
 from pathlib import Path
 
@@ -10,8 +9,25 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
-from torchvision import datasets
-from loguru import logger
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
+try:
+    from torchvision import datasets
+except ImportError:
+    datasets = None
+
+try:
+    from loguru import logger
+except ImportError:
+    class _Logger:
+        @staticmethod
+        def info(message):
+            print(message)
+
+    logger = _Logger()
 
 import cirkit.symbolic.functional as sf
 from cirkit.backend.torch.layers import TorchInputLayer
@@ -41,14 +57,17 @@ def rgb_to_ycocg_lossless(images: torch.Tensor) -> torch.Tensor:
 
 
 def rgb_to_ycocg_lossy(images: torch.Tensor) -> torch.Tensor:
-    rgb = images.float()
-    red, green, blue = rgb[:, 0], rgb[:, 1], rgb[:, 2]
+    deq_img = (images.float() / 127.5) - 1.0
+    red = (deq_img[:, 0] + 1.0) / 2.0
+    green = (deq_img[:, 1] + 1.0) / 2.0
+    blue = (deq_img[:, 2] + 1.0) / 2.0
     co = red - blue
-    tmp = blue + co / 2.0
+    tmp = blue + co / 2
     cg = green - tmp
-    y = tmp + cg / 2.0
-    ycc = torch.stack((y, co + 128.0, cg + 128.0), dim=1)
-    return ycc.round().clamp_(0, 255).long()
+    y = tmp + cg / 2
+    y = y * 2.0 - 1.0
+    transformed_img = torch.stack((y, co, cg), dim=1)
+    return torch.floor(((transformed_img + 1.0) / 2.0) * 256).long().clip(0, 255)
 
 
 def apply_color_transform(images: torch.Tensor, ycc: str) -> torch.Tensor:
@@ -366,7 +385,13 @@ if __name__ == "__main__":
     parser.add_argument("--root", type=str, default="datasets", help="dataset root or local tensor directory")
     parser.add_argument("--image-shape", type=int, nargs=3, metavar=("C", "H", "W"), default=None)
     parser.add_argument("--ycc", type=str, default="none", choices=["none", "lossy", "lossless"])
-    parser.add_argument("--input-sharing", type=str, default="none", choices=["none", "channel", "global"])
+    parser.add_argument(
+        "--input-sharing",
+        type=str,
+        default="none",
+        choices=["none", "full", "channel", "global"],
+        help="'full' matches ten-pics full_sharing for RGB inputs; 'channel' is accepted as an alias",
+    )
 
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument("--T_0", type=int, default=1, help="T_0 for cosine annealing")

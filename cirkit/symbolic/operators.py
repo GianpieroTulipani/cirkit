@@ -13,6 +13,7 @@ from cirkit.symbolic.layers import (
     KroneckerLayer,
     Layer,
     LayerOperator,
+    MultichannelCategoricalLayer,
     PolynomialLayer,
     SumLayer,
 )
@@ -59,6 +60,25 @@ def integrate_categorical_layer(sl: CategoricalLayer, *, scope: Scope) -> Circui
     else:
         reduce_lse = ReduceLSEParameter(sl.logits.shape, axis=1)
         log_partition = Parameter.from_unary(reduce_lse, sl.logits.ref())
+    int_sl = ConstantValueLayer(sl.num_output_units, log_space=True, value=log_partition)
+    return CircuitBlock.from_layer(int_sl)
+
+
+def integrate_multichannel_categorical_layer(
+    sl: MultichannelCategoricalLayer, *, scope: Scope
+) -> CircuitBlock:
+    if not len(sl.scope & scope):
+        raise ValueError(
+            f"The scope of the MultichannelCategorical layer '{sl.scope}'"
+            f" is expected to be a subset of the integration scope '{scope}'"
+        )
+    if sl.logits is None:
+        log_partition = Parameter.from_input(ConstantParameter(sl.num_output_units, value=0.0))
+    else:
+        reduce_lse = ReduceLSEParameter(sl.logits.shape, axis=2)
+        channel_partitions = Parameter.from_unary(reduce_lse, sl.logits.ref())
+        reduce_sum = ReduceSumParameter(channel_partitions.shape, axis=1)
+        log_partition = Parameter.from_unary(reduce_sum, channel_partitions)
     int_sl = ConstantValueLayer(sl.num_output_units, log_space=True, value=log_partition)
     return CircuitBlock.from_layer(int_sl)
 
@@ -303,6 +323,20 @@ def conjugate_categorical_layer(sl: CategoricalLayer) -> CircuitBlock:
     return CircuitBlock.from_layer(sl)
 
 
+def conjugate_multichannel_categorical_layer(sl: MultichannelCategoricalLayer) -> CircuitBlock:
+    logits = sl.logits.ref() if sl.logits is not None else None
+    probs = sl.probs.ref() if sl.probs is not None else None
+    sl = MultichannelCategoricalLayer(
+        sl.scope,
+        sl.num_output_units,
+        num_channels=sl.num_channels,
+        num_categories=sl.num_categories,
+        logits=logits,
+        probs=probs,
+    )
+    return CircuitBlock.from_layer(sl)
+
+
 def conjugate_gaussian_layer(sl: GaussianLayer) -> CircuitBlock:
     mean = sl.mean.ref()
     stddev = sl.stddev.ref()
@@ -342,6 +376,7 @@ DEFAULT_OPERATOR_RULES: Mapping[LayerOperator, Sequence[Callable[..., CircuitBlo
     LayerOperator.INTEGRATION: [
         integrate_embedding_layer,
         integrate_categorical_layer,
+        integrate_multichannel_categorical_layer,
         integrate_gaussian_layer,
     ],
     LayerOperator.DIFFERENTIATION: [differentiate_polynomial_layer],
@@ -357,6 +392,7 @@ DEFAULT_OPERATOR_RULES: Mapping[LayerOperator, Sequence[Callable[..., CircuitBlo
     LayerOperator.CONJUGATION: [
         conjugate_embedding_layer,
         conjugate_categorical_layer,
+        conjugate_multichannel_categorical_layer,
         conjugate_gaussian_layer,
         conjugate_polynomial_layer,
         conjugate_sum_layer,

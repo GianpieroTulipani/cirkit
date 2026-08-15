@@ -434,6 +434,112 @@ class TorchCategoricalLayer(TorchExpFamilyLayer):
         return samples
 
 
+class TorchMultichannelCategoricalLayer(TorchExpFamilyLayer):
+    """A Categorical layer for multichannel discrete variables."""
+
+    # pylint: disable-next=too-many-arguments
+    def __init__(
+        self,
+        scope_idx: Tensor,
+        num_output_units: int,
+        *,
+        num_channels: int,
+        num_categories: int = 2,
+        probs: TorchParameter | None = None,
+        logits: TorchParameter | None = None,
+        semiring: Semiring | None = None,
+    ) -> None:
+        num_variables = scope_idx.shape[-1]
+        if num_variables != num_channels:
+            raise ValueError(
+                f"The MultichannelCategorical layer expects {num_channels} variables, "
+                f"found {num_variables}"
+            )
+        if num_channels <= 0:
+            raise ValueError("The number of channels must be positive")
+        if num_categories <= 0:
+            raise ValueError(
+                "The number of categories for Categorical distribution must be positive"
+            )
+        super().__init__(
+            scope_idx,
+            num_output_units,
+            semiring=semiring,
+        )
+        self.num_channels = num_channels
+        self.num_categories = num_categories
+        if not (logits is None) ^ (probs is None):
+            raise ValueError("Exactly one between 'logits' and 'probs' must be specified")
+        if logits is None:
+            assert probs is not None
+            if not self._valid_parameter_shape(probs):
+                raise ValueError(
+                    f"Expected number of folds {self.num_folds} "
+                    f"and shape {self._probs_logits_shape} for 'probs', found"
+                    f"{probs.num_folds} and {probs.shape}, respectively"
+                )
+        elif not self._valid_parameter_shape(logits):
+            raise ValueError(
+                f"Expected number of folds {self.num_folds} "
+                f"and shape {self._probs_logits_shape} for 'logits', found"
+                f"{logits.num_folds} and {logits.shape}, respectively"
+            )
+        self.probs = probs
+        self.logits = logits
+
+    def _valid_parameter_shape(self, p: TorchParameter) -> bool:
+        if p.num_folds != self.num_folds:
+            return False
+        return p.shape == self._probs_logits_shape
+
+    @property
+    def _probs_logits_shape(self) -> tuple[int, ...]:
+        return self.num_output_units, self.num_channels, self.num_categories
+
+    @property
+    def config(self) -> Mapping[str, Any]:
+        return {
+            "num_output_units": self.num_output_units,
+            "num_channels": self.num_channels,
+            "num_categories": self.num_categories,
+        }
+
+    @property
+    def params(self) -> Mapping[str, TorchParameter]:
+        if self.logits is None:
+            assert self.probs is not None
+            return {"probs": self.probs}
+        return {"logits": self.logits}
+
+    def log_unnormalized_likelihood(self, x: Tensor) -> Tensor:
+        if x.is_floating_point():
+            x = x.long()
+        if x.shape[-1] != self.num_channels:
+            raise ValueError(
+                f"Expected input with {self.num_channels} channels, found {x.shape[-1]}"
+            )
+        if self.logits is None:
+            assert self.probs is not None
+            logits = torch.log(self.probs())
+        else:
+            logits = self.logits()
+        idx_fold = torch.arange(self.num_folds, device=logits.device)
+        values = x.clamp(0, self.num_categories - 1)
+        channel_outputs = [
+            logits[idx_fold[:, None], :, c, values[:, :, c]] for c in range(self.num_channels)
+        ]
+        return torch.stack(channel_outputs, dim=0).sum(dim=0)
+
+    def log_partition_function(self) -> Tensor:
+        if self.logits is None:
+            assert self.probs is not None
+            return torch.zeros(
+                size=(self.num_folds, 1, self.num_output_units), device=self.probs.device
+            )
+        logits = self.logits()
+        return torch.logsumexp(logits, dim=3).sum(dim=2).unsqueeze(1)
+
+
 class TorchBinomialLayer(TorchExpFamilyLayer):
     """The Binomial distribution layer.
 

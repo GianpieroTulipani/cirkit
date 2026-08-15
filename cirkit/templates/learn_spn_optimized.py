@@ -10,7 +10,12 @@ from fast_pytorch_kmeans import KMeans
 
 from cirkit.symbolic.circuit import Circuit
 from cirkit.templates.miwae import ConvVAE
-from cirkit.symbolic.layers import CategoricalLayer, SumLayer, InputLayer
+from cirkit.symbolic.layers import (
+    CategoricalLayer,
+    InputLayer,
+    MultichannelCategoricalLayer,
+    SumLayer,
+)
 from cirkit.symbolic.parameters import (
     TensorParameter,
     Parameter,
@@ -32,7 +37,7 @@ class LearnSPN:
     def __init__(
         self,
         alpha: float = 0.5,
-        image_shape: Tuple[int, int] = (1, 28, 28),
+        image_shape: Tuple[int, int, int] = (1, 28, 28),
         seed: Optional[int] = 42,
         noise_scale: float = 0.2,            
         use_miwae: bool = False,
@@ -47,9 +52,8 @@ class LearnSPN:
         assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
         assert noise_scale >= 0, "noise_scale should be non-negative"
         assert alpha >= 0, "alpha should be non-negative"
-        assert input_sharing in ('none', 'channel', 'global'), (
-            "input_sharing should be 'none', 'channel' or 'global'"
-        )
+        input_sharing = {'channel': 'full', 'global': 'full'}.get(input_sharing, input_sharing)
+        assert input_sharing in ('none', 'full'), "input_sharing should be 'none' or 'full'"
         assert num_categories >= 2, "num_categories should be at least 2"
 
         self.alpha = alpha
@@ -61,9 +65,6 @@ class LearnSPN:
         self.num_categories = num_categories
 
         self.adaptive_alpha = adaptive_alpha
-        self._data: Optional[LongTensor] = None
-        self._all_rows: Optional[LongTensor] = None
-        self._shared_input_params: dict[object, Parameter] = {}
 
         self.device = device if device is not None else (torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
@@ -115,46 +116,49 @@ class LearnSPN:
             return self.alpha / max(num_bins, 1)
         return self.alpha
 
-    def _input_share_key(self, feat_idx: int) -> object | None:
-        if self.input_sharing == 'none':
-            return None
-        if self.input_sharing == 'global':
-            return 'global'
-        channels, height, width = self.image_shape
-        num_pixels = height * width
-        channel = feat_idx // num_pixels
-        if channel < 0 or channel >= channels:
-            raise ValueError(f"Feature index {feat_idx} is outside image_shape={self.image_shape}")
-        return channel
+    def _use_multichannel_inputs(self, input_layer: str) -> bool:
+        return (
+            self.data_format == 'image'
+            and input_layer == 'categorical'
+            and self.input_sharing == 'full'
+            and self.image_shape[0] > 1
+        )
 
     def _make_input_factory(self, input_layer: str, num_categories: int):
         if input_layer != 'categorical' or self.input_sharing == 'none':
             return name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
-        shared_params: dict[object, Parameter] = {}
+        shared_probs: Optional[Parameter] = None
 
         def input_factory(scope: Scope, num_units: int) -> InputLayer:
-            if len(scope) != 1:
-                raise ValueError("Shared categorical inputs require univariate scopes")
-            feat_idx = int(next(iter(scope)))
-            key = self._input_share_key(feat_idx)
-            assert key is not None
-            probs = shared_params.get(key)
-            if probs is None:
+            nonlocal shared_probs
+
+            probs = None if shared_probs is None else shared_probs.ref()
+            if self._use_multichannel_inputs(input_layer):
+                num_channels = self.image_shape[0]
+                if len(scope) != num_channels:
+                    raise ValueError(f"Shared RGB inputs require {num_channels}-variable scopes")
+                layer = MultichannelCategoricalLayer(
+                    scope,
+                    num_output_units=num_units,
+                    num_channels=self.image_shape[0],
+                    num_categories=num_categories,
+                    probs=probs,
+                )
+            else:
+                if len(scope) != 1:
+                    raise ValueError("Shared categorical inputs require univariate scopes")
                 layer = CategoricalLayer(
                     scope,
                     num_output_units=num_units,
                     num_categories=num_categories,
+                    probs=probs,
                 )
+
+            if shared_probs is None:
                 assert layer.probs is not None
-                shared_params[key] = layer.probs
-                return layer
-            return CategoricalLayer(
-                scope,
-                num_output_units=num_units,
-                num_categories=num_categories,
-                probs=probs.ref(),
-            )
+                shared_probs = layer.probs
+            return layer
 
         return input_factory
 
@@ -191,15 +195,10 @@ class LearnSPN:
         num_categories = self.num_categories if input_layer == 'categorical' else int(data.max().item() + 1)
         input_factory = self._make_input_factory(input_layer, num_categories)
 
-        if activation == 'clamp':
+        if sum_weight_param is None:
             sum_weight_param = Parameterization(
-                activation='none',
-                initialization='uniform',
-            )
-        else:
-            sum_weight_param = Parameterization(
-                activation=activation,
-                initialization=weights_init,
+                activation='none' if activation == 'clamp' else activation,
+                initialization='uniform' if activation == 'clamp' else weights_init,
             )
         sum_weight_factory = parameterization_to_factory(sum_weight_param)
 
@@ -219,7 +218,7 @@ class LearnSPN:
             num_input_units=num_input_units,
             num_sum_units=num_sum_units,
             num_classes=num_classes,
-            factorize_multivariate=True,
+            factorize_multivariate=not self._use_multichannel_inputs(input_layer),
         )
 
         if use_estimated_weights:
@@ -235,11 +234,9 @@ class LearnSPN:
     ) -> Circuit:
 
         visited = set()
-        self._all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
-        self._data = data
-        self._subpop_cache = {}
-        self._shared_input_params = {}
-        queue = deque([(out, self._all_rows) for out in sc.outputs])
+        all_rows = torch.arange(data.size(0), device=data.device, dtype=torch.long)
+        shared_input_param: Optional[Parameter] = None
+        queue = deque([(out, all_rows) for out in sc.outputs])
 
         while queue:
             layer, rows_idx = queue.popleft()
@@ -251,29 +248,38 @@ class LearnSPN:
             layer_in = sc.layer_inputs(layer)
             layer_out = sc.layer_outputs(layer)
 
-            if isinstance(layer, InputLayer):
-                scope = list(layer.scope)
-                feat_idx = int(scope[0])
-                share_key = self._input_share_key(feat_idx)
+            if isinstance(layer, MultichannelCategoricalLayer):
+                if shared_input_param is None:
+                    probs = self._estimate_multichannel_marginal(
+                        rows=all_rows,
+                        data=data,
+                        num_channels=layer.num_channels,
+                        num_categories=layer.num_categories,
+                    )
+                    shared_input_param = self._make_input_param(probs, layer.num_output_units)
+                    layer.probs = shared_input_param
+                else:
+                    layer.probs = shared_input_param.ref()
 
-                if share_key is not None:
-                    shared_param = self._shared_input_params.get(share_key)
-                    if shared_param is not None:
-                        layer.probs = shared_param.ref()
-                        continue
+            elif isinstance(layer, CategoricalLayer):
+                if self.input_sharing == 'full':
+                    if shared_input_param is None:
+                        probs = self._estimate_global_marginal(all_rows, data, layer.num_categories)
+                        shared_input_param = self._make_input_param(probs, layer.num_output_units)
+                        layer.probs = shared_input_param
+                    else:
+                        layer.probs = shared_input_param.ref()
+                    continue
 
-                param = self._make_input_param_estimated(
-                    feat_idx=feat_idx,
-                    instance_ids=self._all_rows if share_key is not None else rows_idx,
-                    data=data,
+                layer.probs = self._make_input_param(
+                    probs=self._estimate_marginal(
+                        rows_idx,
+                        data,
+                        feat_idx=int(next(iter(layer.scope))),
+                        num_categories=layer.num_categories,
+                    ),
                     num_input_units=layer.num_output_units,
-                    num_categories=layer.num_categories,
-                    share_key=share_key,
                 )
-
-                layer.probs = param
-                if share_key is not None:
-                    self._shared_input_params[share_key] = param
 
             elif isinstance(layer, SumLayer):
                 feat_ids = torch.tensor(list(sc._scopes[layer]), dtype=torch.long, device=data.device)
@@ -344,57 +350,67 @@ class LearnSPN:
         data: LongTensor,
         feat_idx: int,
         num_categories: int,
-        share_key: object | None = None,
     ) -> np.ndarray:
         if rows is None or len(rows) == 0:
             return np.full(num_categories, 1.0 / num_categories, dtype=float)
-        if share_key is None:
-            values = data[rows, feat_idx]
-        elif share_key == 'global':
-            values = data.index_select(0, rows).reshape(-1)
-        else:
-            _, height, width = self.image_shape
-            num_pixels = height * width
-            channel = int(share_key)
-            start = channel * num_pixels
-            stop = start + num_pixels
-            values = data.index_select(0, rows)[:, start:stop].reshape(-1)
+        values = data[rows, feat_idx]
         counts = torch.bincount(values, minlength=num_categories).float().cpu().numpy()
         counts = counts + self._alpha_per_bin(num_categories)
         return counts / counts.sum()
-    
 
-    def _make_input_param_estimated(
+    def _estimate_global_marginal(
         self,
-        feat_idx: int,
-        instance_ids: LongTensor,
+        rows: LongTensor,
         data: LongTensor,
-        num_input_units: int,
         num_categories: int,
-        share_key: object | None = None,
-    ) -> Parameter:
-        
+    ) -> np.ndarray:
+        if rows is None or len(rows) == 0:
+            return np.full(num_categories, 1.0 / num_categories, dtype=float)
+        values = data.index_select(0, rows).reshape(-1)
+        counts = torch.bincount(values, minlength=num_categories).float().cpu().numpy()
+        counts = counts + self._alpha_per_bin(num_categories)
+        return counts / counts.sum()
+
+    def _estimate_multichannel_marginal(
+        self,
+        rows: LongTensor,
+        data: LongTensor,
+        num_channels: int,
+        num_categories: int,
+    ) -> np.ndarray:
+        if rows is None or len(rows) == 0:
+            return np.full(
+                (num_channels, num_categories),
+                1.0 / num_categories,
+                dtype=float,
+            )
+        _, height, width = self.image_shape
+        num_pixels = height * width
+        data_rows = data.index_select(0, rows)
+        marginals = []
+        for channel in range(num_channels):
+            start = channel * num_pixels
+            stop = start + num_pixels
+            values = data_rows[:, start:stop].reshape(-1)
+            counts = torch.bincount(values, minlength=num_categories).float().cpu().numpy()
+            counts = counts + self._alpha_per_bin(num_categories)
+            marginals.append(counts / counts.sum())
+        return np.stack(marginals, axis=0)
+
+    def _make_input_param(self, probs: np.ndarray, num_input_units: int) -> Parameter:
         input_activation = 'softmax'
-
-        probs = self._estimate_marginal(instance_ids, data, feat_idx, num_categories, share_key)
-
-        if num_input_units == 1:
-            logits = probs.reshape(1, -1)
-        else:
-            logits = np.tile(probs.reshape(1, -1), (num_input_units, 1))
-
-        theta = self._to_preactivation(logits, input_activation)
+        param_shape = (num_input_units, *probs.shape)
+        theta = np.broadcast_to(probs, param_shape).copy()
+        theta = self._to_preactivation(theta, input_activation)
         theta = self._apply_symmetry_breaking(theta, input_activation)
 
         tp = TensorParameter(
-            num_input_units,
-            num_categories,
+            *param_shape,
             initializer=ConstantTensorInitializer(theta),
             learnable=True,
         )
         unary_op_factory = name_to_parameter_activation(input_activation)
-        return Parameter.from_unary(unary_op_factory((num_input_units, num_categories)), tp)
-
+        return Parameter.from_unary(unary_op_factory(param_shape), tp)
 
     def _cluster_mixture_weights(self, clusters: List[LongTensor]) -> np.ndarray:
         sizes = np.array([int(c.numel()) for c in clusters], dtype=float)
