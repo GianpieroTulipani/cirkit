@@ -150,7 +150,7 @@ def _load_local_tensor_dataset(
 
 def _load_vision_dataset(dataset: str, root: str, ycc: str) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int, int]]:
     if datasets is None:
-        raise ImportError("Install torchvision to load mnist, fashion-mnist, cifar10, or cifar100")
+        raise ImportError("Install torchvision to load mnist, fashion-mnist, or cifar10")
     if dataset == "mnist":
         train_ds = datasets.MNIST(root=root, train=True, download=True)
         test_ds = datasets.MNIST(root=root, train=False, download=True)
@@ -159,10 +159,9 @@ def _load_vision_dataset(dataset: str, root: str, ycc: str) -> tuple[torch.Tenso
         train_ds = datasets.FashionMNIST(root=root, train=True, download=True)
         test_ds = datasets.FashionMNIST(root=root, train=False, download=True)
         return flatten_images(train_ds.data[:, None], ycc), flatten_images(test_ds.data[:, None], ycc), (1, 28, 28)
-    if dataset in {"cifar10", "cifar100"}:
-        cls = datasets.CIFAR10 if dataset == "cifar10" else datasets.CIFAR100
-        train_ds = cls(root=root, train=True, download=True)
-        test_ds = cls(root=root, train=False, download=True)
+    if dataset in {"cifar", "cifar10"}:
+        train_ds = datasets.CIFAR10(root=root, train=True, download=True)
+        test_ds = datasets.CIFAR10(root=root, train=False, download=True)
         train = torch.as_tensor(train_ds.data).permute(0, 3, 1, 2)
         test = torch.as_tensor(test_ds.data).permute(0, 3, 1, 2)
         return flatten_images(train, ycc), flatten_images(test, ycc), (3, 32, 32)
@@ -380,7 +379,7 @@ if __name__ == "__main__":
         "--dataset",
         type=str,
         default="mnist",
-        choices=["mnist", "fashion-mnist", "cifar10", "cifar100", "celeba", "imagenet32", "imagenet64", "tensor"],
+        choices=["mnist", "fashion-mnist", "cifar", "cifar10", "celeba", "imagenet32", "imagenet64", "tensor"],
         help="dataset to train on",
     )
     parser.add_argument("--rg", type=str, default="quad-tree-2", choices=["quad-tree-2", "quad-tree-4", "quad-graph"])
