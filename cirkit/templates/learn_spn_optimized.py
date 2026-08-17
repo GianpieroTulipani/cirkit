@@ -52,7 +52,6 @@ class LearnSPN:
         assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
         assert noise_scale >= 0, "noise_scale should be non-negative"
         assert alpha >= 0, "alpha should be non-negative"
-        input_sharing = {'channel': 'full', 'global': 'full'}.get(input_sharing, input_sharing)
         assert input_sharing in ('none', 'full'), "input_sharing should be 'none' or 'full'"
         assert num_categories >= 2, "num_categories should be at least 2"
 
@@ -128,7 +127,7 @@ class LearnSPN:
         if input_layer != 'categorical' or self.input_sharing == 'none':
             return name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
-        shared_probs: Optional[Parameter] = None
+        shared_probs: Parameter = None
 
         def input_factory(scope: Scope, num_units: int) -> InputLayer:
             nonlocal shared_probs
