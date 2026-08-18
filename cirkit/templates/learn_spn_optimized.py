@@ -1,6 +1,6 @@
 import functools
 from collections import deque
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 
 import numpy as np
 import torch
@@ -47,6 +47,8 @@ class LearnSPN:
         adaptive_alpha: bool = True,
         input_sharing: str = "none",
         num_categories: int = 256,
+        estimation_device: Optional[Union[str, torch.device]] = None,
+        miwae_batch_size: Optional[int] = 1024,
     ):
 
         assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
@@ -54,6 +56,9 @@ class LearnSPN:
         assert alpha >= 0, "alpha should be non-negative"
         assert input_sharing in ('none', 'full'), "input_sharing should be 'none' or 'full'"
         assert num_categories >= 2, "num_categories should be at least 2"
+        assert miwae_batch_size is None or miwae_batch_size > 0, (
+            "miwae_batch_size should be positive or None"
+        )
 
         self.alpha = alpha
         self.use_miwae = use_miwae
@@ -62,6 +67,10 @@ class LearnSPN:
         self.data_format = data_format
         self.input_sharing = input_sharing
         self.num_categories = num_categories
+        self.estimation_device = (
+            torch.device(estimation_device) if estimation_device is not None else None
+        )
+        self.miwae_batch_size = miwae_batch_size
 
         self.adaptive_alpha = adaptive_alpha
 
@@ -122,6 +131,11 @@ class LearnSPN:
             and self.input_sharing == 'full'
             and self.image_shape[0] > 1
         )
+
+    def _prepare_estimation_data(self, data: LongTensor) -> LongTensor:
+        if self.estimation_device is None or data.device == self.estimation_device:
+            return data
+        return data.to(self.estimation_device, non_blocking=True)
 
     def _make_input_factory(self, input_layer: str, num_categories: int):
         if input_layer != 'categorical' or self.input_sharing == 'none':
@@ -190,8 +204,14 @@ class LearnSPN:
         else:
             raise ValueError(f"Unknown region graph called {region_graph}")
 
+        estimation_data = self._prepare_estimation_data(data) if use_estimated_weights else data
+
         nary_sum_weight_factory: ParameterFactory
-        num_categories = self.num_categories if input_layer == 'categorical' else int(data.max().item() + 1)
+        num_categories = (
+            self.num_categories
+            if input_layer == 'categorical'
+            else int(estimation_data.max().item() + 1)
+        )
         input_factory = self._make_input_factory(input_layer, num_categories)
 
         if sum_weight_param is None:
@@ -221,7 +241,7 @@ class LearnSPN:
         )
 
         if use_estimated_weights:
-            sc = self._estimate_parameters(sc, data, activation=activation)
+            sc = self._estimate_parameters(sc, estimation_data, activation=activation)
         
         return sc
 
@@ -319,18 +339,7 @@ class LearnSPN:
         kmeans = KMeans(n_clusters=n_clusters, mode=mode, verbose=verbose)
 
         if self.use_miwae:
-            C, H, W = self.image_shape
-            N = instance_ids.numel()
-            sub = data.index_select(0, instance_ids)
-            imgs = torch.zeros((N, C, H, W), device=self.device, dtype=torch.float32)
-
-            for feat_idx in feat_ids.tolist():
-                y, x = self.coords[feat_idx]
-                imgs[:, 0, y, x] = sub[:, feat_idx].float() / 255.0
-
-            with torch.no_grad():
-                mu, _, _, _ = self.miwae.encoder(imgs) #log_var in pos 2
-                feats = mu.detach() #torch.cat([mu, log_var], dim=1).detach()
+            feats = self._miwae_features(feat_ids, instance_ids, data)
         else:
             feats = data.index_select(0, instance_ids).index_select(1, feat_ids).float()
             
@@ -342,6 +351,43 @@ class LearnSPN:
             clusters.append(instance_ids[mask])
 
         return clusters
+
+    def _miwae_features(
+        self,
+        feat_ids: LongTensor,
+        instance_ids: LongTensor,
+        data: Tensor,
+    ) -> Tensor:
+        C, H, W = self.image_shape
+        batch_size = self.miwae_batch_size or instance_ids.numel()
+        embeddings = []
+        feat_ids_list = feat_ids.detach().cpu().tolist()
+
+        was_training = self.miwae.training
+        self.miwae.eval()
+        try:
+            with torch.no_grad():
+                for start in range(0, instance_ids.numel(), batch_size):
+                    stop = min(start + batch_size, instance_ids.numel())
+                    batch_ids = instance_ids[start:stop]
+                    sub = data.index_select(0, batch_ids)
+                    imgs = torch.zeros(
+                        (batch_ids.numel(), C, H, W), device=self.device, dtype=torch.float32
+                    )
+
+                    for feat_idx in feat_ids_list:
+                        y, x = self.coords[feat_idx]
+                        values = sub[:, feat_idx].to(
+                            self.device, dtype=torch.float32, non_blocking=True
+                        )
+                        imgs[:, 0, y, x] = values / 255.0
+
+                    mu, _, _, _ = self.miwae.encoder(imgs) #log_var in pos 2
+                    embeddings.append(mu.detach().to(data.device, non_blocking=True))
+        finally:
+            self.miwae.train(was_training)
+
+        return torch.cat(embeddings, dim=0)
 
     def _estimate_marginal(
         self,
