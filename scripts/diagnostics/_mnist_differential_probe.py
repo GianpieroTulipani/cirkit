@@ -38,7 +38,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-root", type=Path, default=Path("datasets"))
     parser.add_argument("--synthetic-samples", type=int, default=512)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--estimation-device", default="cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--k", type=int, default=32)
     parser.add_argument("--steps", type=int, default=25)
@@ -201,7 +200,7 @@ def import_target_cirkit(source_root: Path) -> dict[str, Any]:
 def learner_kwargs(learn_spn_cls: type, args: argparse.Namespace) -> dict[str, Any]:
     signature = inspect.signature(learn_spn_cls.__init__)
     supported = signature.parameters
-    estimation_device = resolve_device(args.estimation_device)
+    device = resolve_device(args.device)
     candidates: dict[str, Any] = {
         "alpha": args.alpha,
         "noise_scale": args.noise_scale,
@@ -209,12 +208,11 @@ def learner_kwargs(learn_spn_cls: type, args: argparse.Namespace) -> dict[str, A
         "data_format": "image",
         "image_shape": (1, 28, 28),
         # The historical learner uses ``device`` for row indices during parameter estimation.
-        "device": estimation_device,
+        "device": device,
         "weight_dir": None,
         "adaptive_alpha": args.adaptive_alpha,
         "input_sharing": "none",
         "num_categories": 256,
-        "estimation_device": estimation_device,
     }
     return {name: value for name, value in candidates.items() if name in supported}
 
@@ -364,8 +362,7 @@ def main() -> int:
     LearnSPN = target["LearnSPN"]
     kwargs = learner_kwargs(LearnSPN, args)
     learner = LearnSPN(**kwargs)
-    estimation_device = resolve_device(args.estimation_device)
-    structure_for_build = structure_data.to(estimation_device)
+    structure_for_build = structure_data.to(device)
 
     print(
         f"[{args.label}] building QG-CP K={args.k}, "

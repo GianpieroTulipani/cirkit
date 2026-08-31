@@ -438,12 +438,6 @@ if __name__ == "__main__":
     parser.add_argument("--use-mixing-weights", action="store_true", help="use mixing weights for LearnSPN")
     parser.add_argument("--use-estimated-weights", action="store_true", help="use estimated weights for LearnSPN")
     parser.add_argument(
-        "--estimation-device",
-        type=str,
-        default=None,
-        help="device used by optimized LearnSPN while estimating weights, e.g. cpu or cuda",
-    )
-    parser.add_argument(
         "--miwae-batch-size",
         type=int,
         default=1024,
@@ -503,28 +497,17 @@ if __name__ == "__main__":
             adaptive_alpha=args.adaptive_alpha,
             input_sharing=args.input_sharing,
             num_categories=256,
-            estimation_device=args.estimation_device,
             miwae_batch_size=args.miwae_batch_size,
         )
     elif args.input_sharing != "none":
         raise ValueError("--input-sharing is currently implemented for --variant optimized")
-    elif args.estimation_device is not None:
-        raise ValueError("--estimation-device is currently implemented for --variant optimized")
 
     logger.info(f"Using LearnSPN variant: {variant}")
     spn_learner = LearnSPNCls(**learner_kwargs)
     structure_data = limit_samples(X_train, args.structure_samples, args.seed + 3)
     logger.info(f"Using {len(structure_data)} samples to build/estimate the circuit")
 
-    structure_data_device = torch.device(args.estimation_device) if args.estimation_device else device
-    if (
-        variant == "optimized"
-        and args.use_estimated_weights
-        and structure_data_device.type == "cpu"
-    ):
-        structure_data_for_build = structure_data
-    else:
-        structure_data_for_build = structure_data.to(device)
+    structure_data_for_build = structure_data.to(device)
 
     symbolic_circuit = spn_learner.learn_spn(
         structure_data_for_build,

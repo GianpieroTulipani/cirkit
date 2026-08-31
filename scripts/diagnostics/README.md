@@ -48,7 +48,6 @@ python scripts/diagnostics/mnist_differential.py \
   --structure-samples 4096 \
   --estimated-mode both \
   --device cuda \
-  --estimation-device cpu \
   --no-fail-on-diff
 ```
 
@@ -65,7 +64,6 @@ python scripts/diagnostics/mnist_differential.py \
   --structure-samples 0 \
   --estimated-mode on \
   --device cuda \
-  --estimation-device cpu \
   --bpd-atol 0.01 \
   --no-fail-on-diff
 ```

@@ -38,7 +38,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset-root", type=Path, default=Path("datasets"))
     parser.add_argument("--synthetic-samples", type=int, default=512)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--estimation-device", default="cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--k", type=int, default=32)
     parser.add_argument("--steps", type=int, default=25)
@@ -166,8 +165,6 @@ def worker_arguments(
         str(args.synthetic_samples),
         "--device",
         args.device,
-        "--estimation-device",
-        args.estimation_device,
         "--seed",
         str(args.seed),
         "--k",
