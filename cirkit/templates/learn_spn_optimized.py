@@ -1,6 +1,6 @@
 import functools
 from collections import deque
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 
 import numpy as np
 import torch
@@ -47,6 +47,7 @@ class LearnSPN:
         adaptive_alpha: bool = True,
         input_sharing: str = "none",
         num_categories: int = 256,
+        estimation_device: Optional[Union[str, torch.device]] = None,
         miwae_batch_size: Optional[int] = 1024,
     ):
 
@@ -66,6 +67,9 @@ class LearnSPN:
         self.data_format = data_format
         self.input_sharing = input_sharing
         self.num_categories = num_categories
+        self.estimation_device = (
+            torch.device(estimation_device) if estimation_device is not None else None
+        )
         self.miwae_batch_size = miwae_batch_size
 
         self.adaptive_alpha = adaptive_alpha
@@ -127,6 +131,11 @@ class LearnSPN:
             and self.input_sharing == 'full'
             and self.image_shape[0] > 1
         )
+
+    def _prepare_estimation_data(self, data: LongTensor) -> LongTensor:
+        if self.estimation_device is None or data.device == self.estimation_device:
+            return data
+        return data.to(self.estimation_device, non_blocking=True)
 
     def _make_input_factory(self, input_layer: str, num_categories: int):
         if input_layer != 'categorical' or self.input_sharing == 'none':
@@ -195,7 +204,7 @@ class LearnSPN:
         else:
             raise ValueError(f"Unknown region graph called {region_graph}")
 
-        estimation_data = data.to(self.device, non_blocking=True) if use_estimated_weights else data
+        estimation_data = self._prepare_estimation_data(data) if use_estimated_weights else data
 
         nary_sum_weight_factory: ParameterFactory
         num_categories = (
