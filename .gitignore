@@ -168,3 +168,6 @@ cython_debug/
 
 # Notebooks data
 notebooks/datasets/
+
+# Differential diagnostic output
+mnist-differential-results/
