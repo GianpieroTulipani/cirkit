@@ -36,14 +36,7 @@ except ImportError:
 import cirkit.symbolic.functional as sf
 from cirkit.backend.torch.layers import TorchInputLayer
 from cirkit.pipeline import PipelineContext
-from cirkit.templates.learn_spn import LearnSPN as LearnSPNBase
-from cirkit.templates.learn_spn_optimized import LearnSPN as LearnSPNOptimized
-
-
-LEARN_SPN_VARIANTS = {
-    "base": LearnSPNBase,
-    "optimized": LearnSPNOptimized,
-}
+from cirkit.templates.learn_spn import LearnSPN
 
 
 def _forward_lift(x: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -429,25 +422,23 @@ if __name__ == "__main__":
     parser.add_argument("--save-path", type=str, default="best_circuit.pt")
     parser.add_argument("--wandb", action="store_true", help="log to wandb")
     parser.add_argument("--project", type=str, default="pc_dataset_eval", help="wandb project name")
-    parser.add_argument("--variant", type=str, default="optimized", choices=["base", "optimized"])
-
     parser.add_argument("--alpha", type=float, default=5.0)
     parser.add_argument("--noise-scale", type=float, default=2.0)
     parser.add_argument("--use-miwae", action="store_true", help="use MIWAE for LearnSPN")
-    parser.add_argument("--adaptive-alpha", action="store_true", help="use adaptive alpha for optimized LearnSPN")
+    parser.add_argument("--adaptive-alpha", action="store_true", help="use adaptive alpha for LearnSPN")
     parser.add_argument("--use-mixing-weights", action="store_true", help="use mixing weights for LearnSPN")
     parser.add_argument("--use-estimated-weights", action="store_true", help="use estimated weights for LearnSPN")
     parser.add_argument(
         "--estimation-device",
         type=str,
         default=None,
-        help="device used by optimized LearnSPN while estimating weights, e.g. cpu or cuda",
+        help="device used by LearnSPN while estimating weights, e.g. cpu or cuda",
     )
     parser.add_argument(
         "--miwae-batch-size",
         type=int,
         default=1024,
-        help="batch size for MIWAE feature extraction during optimized LearnSPN weight estimation",
+        help="batch size for MIWAE feature extraction during LearnSPN weight estimation",
     )
     args = parser.parse_args()
 
@@ -480,11 +471,6 @@ if __name__ == "__main__":
 
     weight_dir = os.path.join(os.getcwd(), "best_categorical_miwae.pt")
 
-    variant = str(args.variant)
-    if variant not in LEARN_SPN_VARIANTS:
-        raise ValueError(f"learn_spn.variant must be one of {list(LEARN_SPN_VARIANTS)}, not {variant!r}")
-
-    LearnSPNCls = LEARN_SPN_VARIANTS[variant]
     if args.use_miwae and image_shape[0] != 1:
         raise ValueError("MIWAE support in this script is currently limited to single-channel images")
 
@@ -496,28 +482,20 @@ if __name__ == "__main__":
         image_shape=image_shape,
         device=device,
         weight_dir=weight_dir,
+        adaptive_alpha=args.adaptive_alpha,
+        input_sharing=args.input_sharing,
+        num_categories=256,
+        estimation_device=args.estimation_device,
+        miwae_batch_size=args.miwae_batch_size,
     )
 
-    if variant == "optimized":
-        learner_kwargs.update(
-            adaptive_alpha=args.adaptive_alpha,
-            input_sharing=args.input_sharing,
-            num_categories=256,
-            estimation_device=args.estimation_device,
-            miwae_batch_size=args.miwae_batch_size,
-        )
-    elif args.input_sharing != "none":
-        raise ValueError("--input-sharing is currently implemented for --variant optimized")
-    elif args.estimation_device is not None:
-        raise ValueError("--estimation-device is currently implemented for --variant optimized")
-
-    logger.info(f"Using LearnSPN variant: {variant}")
-    spn_learner = LearnSPNCls(**learner_kwargs)
+    logger.info("Using LearnSPN")
+    spn_learner = LearnSPN(**learner_kwargs)
     structure_data = limit_samples(X_train, args.structure_samples, args.seed + 3)
     logger.info(f"Using {len(structure_data)} samples to build/estimate the circuit")
 
     estimation_device = torch.device(args.estimation_device) if args.estimation_device else device
-    if variant == "optimized" and args.use_estimated_weights:
+    if args.use_estimated_weights:
         structure_data_for_build = structure_data.to(estimation_device)
     else:
         structure_data_for_build = structure_data.to(device)
