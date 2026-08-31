@@ -1,7 +1,6 @@
-import random
 import functools
 from collections import deque
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 
 import numpy as np
 import torch
@@ -11,8 +10,18 @@ from fast_pytorch_kmeans import KMeans
 
 from cirkit.symbolic.circuit import Circuit
 from cirkit.templates.miwae import ConvVAE
-from cirkit.symbolic.layers import SumLayer, InputLayer
-from cirkit.symbolic.parameters import TensorParameter, Parameter, ParameterFactory, MixingWeightParameter, mixing_weight_factory
+from cirkit.symbolic.layers import (
+    CategoricalLayer,
+    InputLayer,
+    MultichannelCategoricalLayer,
+    SumLayer,
+)
+from cirkit.symbolic.parameters import (
+    TensorParameter,
+    Parameter,
+    ParameterFactory,
+    mixing_weight_factory
+)
 from cirkit.symbolic.initializers import ConstantTensorInitializer
 from cirkit.templates.utils import (
     Parameterization,
@@ -21,27 +30,49 @@ from cirkit.templates.utils import (
     name_to_parameter_activation,
 )
 from cirkit.templates.region_graph.algorithms import QuadGraph, QuadTree
+from cirkit.utils.scope import Scope
+
 
 class LearnSPN:
     def __init__(
         self,
         alpha: float = 0.5,
-        image_shape: Tuple[int, int] = (1, 28, 28),
+        image_shape: Tuple[int, int, int] = (1, 28, 28),
         seed: Optional[int] = 42,
-        noise_scale: float = 1e-1,
+        noise_scale: float = 0.2,
         use_miwae: bool = False,
         weight_dir: str = None,
         device: Optional[torch.device] = None,
-        data_format: str = None
+        data_format: str = None,
+        adaptive_alpha: bool = True,
+        input_sharing: str = "none",
+        num_categories: int = 256,
+        estimation_device: Optional[Union[str, torch.device]] = None,
+        miwae_batch_size: Optional[int] = 1024,
     ):
-        
+
         assert data_format in ('image', 'tabular'), "data_format should be either 'image' or 'tabular'"
-    
+        assert noise_scale >= 0, "noise_scale should be non-negative"
+        assert alpha >= 0, "alpha should be non-negative"
+        assert input_sharing in ('none', 'full'), "input_sharing should be 'none' or 'full'"
+        assert num_categories >= 2, "num_categories should be at least 2"
+        assert miwae_batch_size is None or miwae_batch_size > 0, (
+            "miwae_batch_size should be positive or None"
+        )
+
         self.alpha = alpha
         self.use_miwae = use_miwae
         self.noise_scale = noise_scale
         self.image_shape = image_shape
         self.data_format = data_format
+        self.input_sharing = input_sharing
+        self.num_categories = num_categories
+        self.estimation_device = (
+            torch.device(estimation_device) if estimation_device is not None else None
+        )
+        self.miwae_batch_size = miwae_batch_size
+
+        self.adaptive_alpha = adaptive_alpha
 
         self.device = device if device is not None else (torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
@@ -53,62 +84,116 @@ class LearnSPN:
 
             if use_miwae:
                 _, H, W = image_shape
-                self.coords = {i: (i // W, i % W) for i in range(H*W)}
+                self.coords = {i: (i // W, i % W) for i in range(H * W)}
                 self.miwae = ConvVAE(input_channel=1, latent_dim=50).to(self.device)
                 if weight_dir is not None:
                     self.miwae.load_state_dict(torch.load(weight_dir, map_location=self.device))
-        
+
     def _set_seed(self, seed: int):
         torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
         np.random.seed(seed)
-        random.seed(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-
-    @staticmethod
-    def _clamp_floor() -> float:
-        # sqrt(tiny) ~ 1.08e-19 per float32: stesso floor usato dal positive-clamp
-        return float(np.sqrt(np.finfo(np.float32).tiny))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
     def _to_preactivation(self, probs: np.ndarray, activation: str) -> np.ndarray:
-        """Mappa probabilità in spazio pre-attivazione in base all'attivazione:
-        positive-clamp -> p (lineare), softplus -> log(expm1(p)), altrimenti -> log(p)."""
-        p = np.clip(np.asarray(probs, dtype=float), 1e-12, None)
-        if activation == 'positive-clamp':
-            return p
+        if activation == 'clamp' or activation == 'none':
+            return probs
+
         if activation == 'softplus':
+            p = np.clip(probs, 1e-12, None)
             return np.log(np.expm1(p))
+
+        if activation == 'sigmoid':
+            p = np.clip(probs, 1e-12, 1 - 1e-12)
+            return np.log(p / (1 - p))
+
+        p = np.clip(probs, 1e-12, None)
         return np.log(p)
 
     def _apply_symmetry_breaking(self, theta: np.ndarray, activation: str) -> np.ndarray:
-        """Rompe la simmetria fra unità senza spingere i pesi fuori dal dominio valido:
-        rumore moltiplicativo positivo in spazio lineare (positive-clamp), additivo altrimenti."""
         s = self.noise_scale
-        if not s or s <= 0.0:
-            return theta
-        if activation == 'positive-clamp':
+        if activation == 'clamp' or activation == 'none':
+            # spazio lineare: rumore moltiplicativo positivo
             noisy = theta * np.exp(np.random.normal(loc=0.0, scale=s, size=theta.shape))
-            return np.clip(noisy, self._clamp_floor(), None)
+            return np.clip(noisy, float(np.sqrt(np.finfo(np.float32).tiny)), None)
+        # spazio log: rumore additivo
         return theta + np.random.normal(loc=0.0, scale=s, size=theta.shape)
 
+    def _alpha_per_bin(self, num_bins: int) -> float:
+        if self.adaptive_alpha:
+            return self.alpha / max(num_bins, 1)
+        return self.alpha
+
+    def _use_multichannel_inputs(self, input_layer: str) -> bool:
+        return (
+            self.data_format == 'image'
+            and input_layer == 'categorical'
+            and self.input_sharing == 'full'
+            and self.image_shape[0] > 1
+        )
+
+    def _prepare_estimation_data(self, data: LongTensor) -> LongTensor:
+        if self.estimation_device is None or data.device == self.estimation_device:
+            return data
+        return data.to(self.estimation_device, non_blocking=True)
+
+    def _make_input_factory(self, input_layer: str, num_categories: int):
+        if input_layer != 'categorical' or self.input_sharing == 'none':
+            return name_to_input_layer_factory(input_layer, num_categories=num_categories)
+
+        shared_probs: Parameter = None
+
+        def input_factory(scope: Scope, num_units: int) -> InputLayer:
+            nonlocal shared_probs
+
+            probs = None if shared_probs is None else shared_probs.ref()
+            if self._use_multichannel_inputs(input_layer):
+                num_channels = self.image_shape[0]
+                if len(scope) != num_channels:
+                    raise ValueError(f"Shared RGB inputs require {num_channels}-variable scopes")
+                layer = MultichannelCategoricalLayer(
+                    scope,
+                    num_output_units=num_units,
+                    num_channels=self.image_shape[0],
+                    num_categories=num_categories,
+                    probs=probs,
+                )
+            else:
+                if len(scope) != 1:
+                    raise ValueError("Shared categorical inputs require univariate scopes")
+                layer = CategoricalLayer(
+                    scope,
+                    num_output_units=num_units,
+                    num_categories=num_categories,
+                    probs=probs,
+                )
+
+            if shared_probs is None:
+                assert layer.probs is not None
+                shared_probs = layer.probs
+            return layer
+
+        return input_factory
+
     def learn_spn(
-            self,
-            data: LongTensor,
-            region_graph: str='quad-graph',
-            input_layer: str = 'categorical',
-            activation: str = 'softmax',
-            weights_init: str = 'normal',
-            sum_product_layer = 'cp',
-            sum_weight_param: Optional[Parameterization] = None,
-            num_input_units: int = 1,
-            num_sum_units: int = 1,
-            num_classes: int = 1,
-            use_estimated_weights:  bool = True,
-            use_mixing_weights: bool = True
-            ) -> Circuit:
-        
-        assert weights_init in ('normal', 'uniform', 'dirichlet', 'None'), "weights_init should be 'normal', 'uniform', 'dirichlet' or 'None'"
+        self,
+        data: LongTensor,
+        region_graph: str = 'quad-graph',
+        input_layer: str = 'categorical',
+        activation: str = 'softmax',
+        weights_init: str = 'normal',
+        sum_product_layer='cp',
+        sum_weight_param: Optional[Parameterization] = None,
+        num_input_units: int = 1,
+        num_sum_units: int = 1,
+        num_classes: int = 1,
+        use_estimated_weights: bool = True,
+        use_mixing_weights: bool = True,
+    ) -> Circuit:
+
+        assert weights_init in ('normal', 'uniform', 'dirichlet', 'None'), (
+            "weights_init should be 'normal', 'uniform', 'dirichlet' or 'None'"
+        )
 
         if region_graph == 'quad-graph':
             rg = QuadGraph(self.image_shape)
@@ -118,34 +203,28 @@ class LearnSPN:
             rg = QuadTree(self.image_shape, num_patch_splits=4)
         else:
             raise ValueError(f"Unknown region graph called {region_graph}")
-        
-        activation_dict = {}
-        init_dict = {}
-        nary_sum_weight_factory: ParameterFactory
-        num_categories = int(data.max().item() + 1)
-        input_factory = name_to_input_layer_factory(input_layer, num_categories=num_categories)
 
-        if activation == 'positive-clamp':
-            activation_dict['vmin'] = self._clamp_floor()
-            # normal (media 0) è incompatibile col clamp -> ripiego su uniform positivo
-            if weights_init == 'normal':
-                weights_init = 'uniform'
-            if weights_init == 'uniform':
-                init_dict = {'a': 0.01, 'b': 0.99}
+        estimation_data = self._prepare_estimation_data(data) if use_estimated_weights else data
+
+        nary_sum_weight_factory: ParameterFactory
+        num_categories = (
+            self.num_categories
+            if input_layer == 'categorical'
+            else int(estimation_data.max().item() + 1)
+        )
+        input_factory = self._make_input_factory(input_layer, num_categories)
 
         if sum_weight_param is None:
             sum_weight_param = Parameterization(
-                activation=activation,
-                initialization=weights_init,
-                activation_kwargs=activation_dict,
-                initialization_kwargs=init_dict
-                )
+                activation='none' if activation == 'clamp' else activation,
+                initialization='uniform' if activation == 'clamp' else weights_init,
+            )
         sum_weight_factory = parameterization_to_factory(sum_weight_param)
-        
+
         if use_mixing_weights:
             nary_sum_weight_factory = functools.partial(
                 mixing_weight_factory,
-                param_factory=sum_weight_factory
+                param_factory=sum_weight_factory,
             )
         else:
             nary_sum_weight_factory = sum_weight_factory
@@ -158,29 +237,24 @@ class LearnSPN:
             num_input_units=num_input_units,
             num_sum_units=num_sum_units,
             num_classes=num_classes,
-            factorize_multivariate=True
+            factorize_multivariate=not self._use_multichannel_inputs(input_layer),
         )
 
         if use_estimated_weights:
-            sc = self._estimate_parameters(
-                sc,
-                data,
-                activation=activation,
-                activation_dict=activation_dict
-            )
+            sc = self._estimate_parameters(sc, estimation_data, activation=activation)
 
         return sc
 
     def _estimate_parameters(
-            self,
-            sc: Circuit,
-            data: LongTensor,
-            activation: str,
-            activation_dict: dict
-            ) -> Circuit:
-        
+        self,
+        sc: Circuit,
+        data: LongTensor,
+        activation: str,
+    ) -> Circuit:
+
         visited = set()
-        all_rows = torch.arange(data.size(0), device=self.device, dtype=torch.long)
+        all_rows = torch.arange(data.size(0), device=data.device, dtype=torch.long)
+        shared_input_param: Optional[Parameter] = None
         queue = deque([(out, all_rows) for out in sc.outputs])
 
         while queue:
@@ -192,35 +266,54 @@ class LearnSPN:
 
             layer_in = sc.layer_inputs(layer)
             layer_out = sc.layer_outputs(layer)
-            
-            if isinstance(layer, InputLayer):
-                scope = list(layer.scope)
-                
-                param = self._make_input_param_estimated(
-                    feat_idx=int(scope[0]),
-                    instance_ids=rows_idx,
-                    data=data,
+
+            if isinstance(layer, MultichannelCategoricalLayer):
+                if shared_input_param is None:
+                    probs = self._estimate_multichannel_marginal(
+                        rows=all_rows,
+                        data=data,
+                        num_channels=layer.num_channels,
+                        num_categories=layer.num_categories,
+                    )
+                    shared_input_param = self._make_input_param(probs, layer.num_output_units)
+                    layer.probs = shared_input_param
+                else:
+                    layer.probs = shared_input_param.ref()
+
+            elif isinstance(layer, CategoricalLayer):
+                if self.input_sharing == 'full':
+                    if shared_input_param is None:
+                        probs = self._estimate_global_marginal(all_rows, data, layer.num_categories)
+                        shared_input_param = self._make_input_param(probs, layer.num_output_units)
+                        layer.probs = shared_input_param
+                    else:
+                        layer.probs = shared_input_param.ref()
+                    continue
+
+                layer.probs = self._make_input_param(
+                    probs=self._estimate_marginal(
+                        rows_idx,
+                        data,
+                        feat_idx=int(next(iter(layer.scope))),
+                        num_categories=layer.num_categories,
+                    ),
                     num_input_units=layer.num_output_units,
-                    num_categories=layer.num_categories
                 )
-                
-                layer.probs=param
-                    
+
             elif isinstance(layer, SumLayer):
                 feat_ids = torch.tensor(list(sc._scopes[layer]), dtype=torch.long, device=data.device)
-                cluster=self._cluster_instances(feat_ids, rows_idx, data, len(layer_in))
+                clusters = self._cluster_instances(feat_ids, rows_idx, data, len(layer_in))
 
                 param = self._make_sum_param_estimated(
-                    clusters=cluster,
+                    clusters=clusters,
                     num_input_units=layer.num_input_units,
                     num_sum_units=(1 if layer_out is None else layer.num_output_units),
                     activation=activation,
-                    activation_dict=activation_dict
                 )
-                
-                layer.weight=param
 
-                for child, cluster_ids in zip(layer_in, cluster):
+                layer.weight = param
+
+                for child, cluster_ids in zip(layer_in, clusters):
                     if child not in visited:
                         queue.append((child, cluster_ids))
             else:
@@ -229,43 +322,29 @@ class LearnSPN:
                         queue.append((child, rows_idx))
 
         return sc
-        
+
     def _cluster_instances(
-        self, 
-        feat_ids: LongTensor, 
-        instance_ids: LongTensor, 
-        data: Tensor, 
-        n_clusters: int = 2, 
-        mode: str = "euclidean"
-    ) -> Tuple[LongTensor, LongTensor]:
-        
+        self,
+        feat_ids: LongTensor,
+        instance_ids: LongTensor,
+        data: Tensor,
+        n_clusters: int = 2,
+        mode: str = "euclidean",
+        verbose: int = 0
+    ) -> List[LongTensor]:
+
         if instance_ids.numel() == 0:
             return [instance_ids.new_empty((0,), dtype=torch.long) for _ in range(n_clusters)]
-        
-        kmeans = KMeans(n_clusters=n_clusters,
-                        mode=mode,
-                        verbose=0
-                        )
-        
+
+        kmeans = KMeans(n_clusters=n_clusters, mode=mode, verbose=verbose)
+
         if self.use_miwae:
-            C, H, W = self.image_shape
-            N = instance_ids.numel()
-            sub = data.index_select(0, instance_ids)
-            imgs = torch.zeros((N, C, H, W), device=self.device, dtype=torch.float32)
-
-            for feat_idx in feat_ids.tolist():
-                y, x = self.coords[feat_idx]
-                imgs[:, 0, y, x] = sub[:, feat_idx].float() / 255.0
-            
-            with torch.no_grad():
-                mu, log_var, _, _ = self.miwae.encoder(imgs)
-                embeddings = torch.cat([mu, log_var], dim=1).detach()
-
-            labels = kmeans.fit_predict(embeddings)
+            feats = self._miwae_features(feat_ids, instance_ids, data)
         else:
-            sub = data.index_select(0, instance_ids).index_select(1, feat_ids).float()
-            labels = kmeans.fit_predict(sub)
-        
+            feats = data.index_select(0, instance_ids).index_select(1, feat_ids).float()
+            
+        labels = kmeans.fit_predict(feats)
+
         clusters: List[LongTensor] = []
         for c in range(n_clusters):
             mask = (labels == c)
@@ -273,46 +352,119 @@ class LearnSPN:
 
         return clusters
 
-    def _make_input_param_estimated(
+    def _miwae_features(
         self,
-        feat_idx: int,
+        feat_ids: LongTensor,
         instance_ids: LongTensor,
+        data: Tensor,
+    ) -> Tensor:
+        C, H, W = self.image_shape
+        batch_size = self.miwae_batch_size or instance_ids.numel()
+        embeddings = []
+        feat_ids_list = feat_ids.detach().cpu().tolist()
+
+        was_training = self.miwae.training
+        self.miwae.eval()
+        try:
+            with torch.no_grad():
+                for start in range(0, instance_ids.numel(), batch_size):
+                    stop = min(start + batch_size, instance_ids.numel())
+                    batch_ids = instance_ids[start:stop]
+                    sub = data.index_select(0, batch_ids)
+                    imgs = torch.zeros(
+                        (batch_ids.numel(), C, H, W), device=self.device, dtype=torch.float32
+                    )
+
+                    for feat_idx in feat_ids_list:
+                        y, x = self.coords[feat_idx]
+                        values = sub[:, feat_idx].to(
+                            self.device, dtype=torch.float32, non_blocking=True
+                        )
+                        imgs[:, 0, y, x] = values / 255.0
+
+                    mu, _, _, _ = self.miwae.encoder(imgs) #log_var in pos 2
+                    embeddings.append(mu.detach().to(data.device, non_blocking=True))
+        finally:
+            self.miwae.train(was_training)
+
+        return torch.cat(embeddings, dim=0)
+
+    def _estimate_marginal(
+        self,
+        rows: LongTensor,
         data: LongTensor,
-        num_input_units: int,
-        num_categories: int
-    ):
-        # L'input categorico DEVE restare una distribuzione normalizzata: si usa sempre
-        # softmax, a prescindere dall'attivazione dei pesi sum. Le attivazioni non
-        # normalizzanti (positive-clamp, softplus, sigmoid, none) lascerebbero la
-        # categorica non normalizzata durante il training -> la partition function non la
-        # insegue e il PC diventa improprio (c(x) > Z, NLL/bpd negativa). Questo replica il
-        # default di cirkit (CategoricalLayer -> SoftmaxParameter).
+        feat_idx: int,
+        num_categories: int,
+    ) -> np.ndarray:
+        if rows is None or len(rows) == 0:
+            return np.full(num_categories, 1.0 / num_categories, dtype=float)
+        values = data[rows, feat_idx].long()
+        counts = torch.bincount(values, minlength=num_categories).float().cpu().numpy()
+        counts = counts + self._alpha_per_bin(num_categories)
+        return counts / counts.sum()
+
+    def _estimate_global_marginal(
+        self,
+        rows: LongTensor,
+        data: LongTensor,
+        num_categories: int,
+    ) -> np.ndarray:
+        if rows is None or len(rows) == 0:
+            return np.full(num_categories, 1.0 / num_categories, dtype=float)
+        values = data.index_select(0, rows).reshape(-1).long()
+        counts = torch.bincount(values, minlength=num_categories).float().cpu().numpy()
+        counts = counts + self._alpha_per_bin(num_categories)
+        return counts / counts.sum()
+
+    def _estimate_multichannel_marginal(
+        self,
+        rows: LongTensor,
+        data: LongTensor,
+        num_channels: int,
+        num_categories: int,
+    ) -> np.ndarray:
+        if rows is None or len(rows) == 0:
+            return np.full(
+                (num_channels, num_categories),
+                1.0 / num_categories,
+                dtype=float,
+            )
+        _, height, width = self.image_shape
+        num_pixels = height * width
+        data_rows = data.index_select(0, rows)
+        marginals = []
+        for channel in range(num_channels):
+            start = channel * num_pixels
+            stop = start + num_pixels
+            values = data_rows[:, start:stop].reshape(-1).long()
+            counts = torch.bincount(values, minlength=num_categories).float().cpu().numpy()
+            counts = counts + self._alpha_per_bin(num_categories)
+            marginals.append(counts / counts.sum())
+        return np.stack(marginals, axis=0)
+
+    def _make_input_param(self, probs: np.ndarray, num_input_units: int) -> Parameter:
         input_activation = 'softmax'
-
-        col = data[instance_ids, feat_idx]
-        counts = torch.bincount(col, minlength=num_categories).float()
-        counts += self.alpha
-        probs = counts / counts.sum()
-
-        probs_np = probs.cpu().numpy().astype(float)
-
-        base = self._to_preactivation(probs_np, input_activation)  # log(p): logits per softmax
-        if num_input_units == 1:
-            logits = base.reshape(1, num_categories)
-        else:
-            logits = np.tile(base.reshape(1, num_categories), (num_input_units, 1))
-            logits = self._apply_symmetry_breaking(logits, input_activation)
+        param_shape = (num_input_units, *probs.shape)
+        theta = np.broadcast_to(probs, param_shape).copy()
+        theta = self._to_preactivation(theta, input_activation)
+        theta = self._apply_symmetry_breaking(theta, input_activation)
 
         tp = TensorParameter(
-            num_input_units,
-            num_categories,
-            initializer=ConstantTensorInitializer(logits),
-            learnable=True
-            )
-
+            *param_shape,
+            initializer=ConstantTensorInitializer(theta),
+            learnable=True,
+        )
         unary_op_factory = name_to_parameter_activation(input_activation)
+        return Parameter.from_unary(unary_op_factory(param_shape), tp)
 
-        return Parameter.from_unary(unary_op_factory((num_input_units, num_categories)), tp)
+    def _cluster_mixture_weights(self, clusters: List[LongTensor]) -> np.ndarray:
+        sizes = np.array([int(c.numel()) for c in clusters], dtype=float)
+        sizes = sizes + self._alpha_per_bin(len(clusters))
+        total = sizes.sum()
+        if total <= 0:
+            return np.full(len(clusters), 1.0 / len(clusters), dtype=float)
+        return sizes / total
+
 
     def _make_sum_param_estimated(
         self,
@@ -320,32 +472,40 @@ class LearnSPN:
         num_input_units: int,
         num_sum_units: int,
         activation: str,
-        activation_dict: dict
-    ):
-        arity = len(clusters)
-        cluster_sizes = [int(c.numel()) for c in clusters]
-        smoothed = [sz + self.alpha for sz in cluster_sizes]
-        total = float(sum(smoothed))
-        weights = [sz / total for sz in smoothed]
-        mix_weights = np.array(weights, dtype=float)
-        
-        if num_input_units == 1:
-            logits = self._to_preactivation(mix_weights.reshape(1, arity), activation)
-        else:
-            rep_weights = np.tile(mix_weights.reshape(1, arity), (num_sum_units, 1))
-            rep_weights_expandend = np.tile(rep_weights.reshape(num_sum_units, arity, 1), (1, 1, num_input_units))
-            rep_weights_flat = rep_weights_expandend.reshape(num_sum_units, arity * num_input_units)
+    ) -> Parameter:
 
-            logits = self._to_preactivation(rep_weights_flat, activation)
-            logits = self._apply_symmetry_breaking(logits, activation)
+        arity = len(clusters)
+        base_mix = self._cluster_mixture_weights(clusters)
+
+        if activation == 'clamp':
+            activation = 'none'
+
+        if num_sum_units == 1 and num_input_units == 1:
+            theta = self._to_preactivation(base_mix.reshape(1, arity), activation)
+            theta = self._apply_symmetry_breaking(theta, activation)
+            tp = TensorParameter(1, arity, initializer=ConstantTensorInitializer(theta), learnable=True)
+            unary_op_factory = name_to_parameter_activation(activation)
+            if unary_op_factory is None:
+                return Parameter.from_input(tp)
+            return Parameter.from_unary(unary_op_factory((1, arity)), tp)
+        
+        per_unit_mix = np.tile(base_mix.reshape(1, -1), (num_sum_units, 1))
+
+        expanded = np.repeat(per_unit_mix[:, :, None] / num_input_units, num_input_units, axis=2)
+        expanded = expanded.reshape(num_sum_units, arity * num_input_units)
+
+        theta = self._to_preactivation(expanded, activation)
+        theta = self._apply_symmetry_breaking(theta, activation)
 
         tp = TensorParameter(
             num_sum_units,
             arity * num_input_units,
-            initializer=ConstantTensorInitializer(logits),
-            learnable=True
+            initializer=ConstantTensorInitializer(theta),
+            learnable=True,
         )
 
-        unary_op_factory = name_to_parameter_activation(activation, **activation_dict)
+        unary_op_factory = name_to_parameter_activation(activation)
 
+        if unary_op_factory is None:
+            return Parameter.from_input(tp)
         return Parameter.from_unary(unary_op_factory((num_sum_units, num_input_units * arity)), tp)
