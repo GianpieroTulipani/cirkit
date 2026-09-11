@@ -297,12 +297,11 @@ def train_circuit(
             total_steps += 1
 
             if total_steps % validation_steps == 0:
-                logger.info(f"Validation at training step {total_steps} ({len(val_loader)} batches)")
                 circuit.eval()
                 val_loss_sum = torch.zeros((), dtype=torch.float64, device=device)
                 val_count = 0
                 with torch.inference_mode():
-                    for (val_batch,) in tqdm(val_loader, desc=f"[Val step {total_steps}]", leave=False):
+                    for (val_batch,) in val_loader:
                         val_batch = val_batch.to(device).long()
                         val_loss_sum.add_(nll_fn(val_batch).to(torch.float64), alpha=val_batch.size(0))
                         val_count += val_batch.size(0)
