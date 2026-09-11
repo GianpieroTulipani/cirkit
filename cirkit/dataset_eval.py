@@ -36,7 +36,6 @@ except ImportError:
 import cirkit.symbolic.functional as sf
 from cirkit.backend.torch.layers import TorchInputLayer
 from cirkit.pipeline import PipelineContext
-from cirkit.templates.learn_spn import LearnSPN
 
 
 def _forward_lift(x: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -200,6 +199,35 @@ def limit_samples(data: torch.Tensor, max_samples: int | None, seed: int) -> tor
     return data[indices]
 
 
+def make_nll_function(
+    circuit,
+    partition_function,
+    *,
+    use_compile=False,
+    backend="inductor",
+    mode="default",
+    fullgraph=False,
+):
+    """Build the shared train/eval loss, optionally compiling its tensor operations.
+
+    Keep the original modules for optimizer parameters and checkpoint keys. The
+    callable reads their current parameters, including after loading a checkpoint.
+    Data transfer, logging and optimizer updates stay outside the compiled region.
+    """
+    def nll(batch):
+        return -(circuit(batch) - partition_function()).mean()
+
+    if not use_compile:
+        return nll
+    if backend != "inductor" and mode != "default":
+        raise ValueError("Non-default compile modes require --compile-backend=inductor")
+    logger.info(
+        f"Enabling torch.compile for NLL: backend={backend}, mode={mode}, fullgraph={fullgraph}. "
+        "The first training and evaluation batches include compilation overhead."
+    )
+    return torch.compile(nll, backend=backend, mode=mode, fullgraph=fullgraph)
+
+
 def train_circuit(
     circuit,
     partition_function,
@@ -220,7 +248,10 @@ def train_circuit(
     log_to_wandb=True,
     activation=None,
     use_scheduler=False,
+    nll_fn=None,
 ):
+    if nll_fn is None:
+        nll_fn = make_nll_function(circuit, partition_function)
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     if use_scheduler:
         scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -246,8 +277,7 @@ def train_circuit(
         for (batch,) in tqdm(train_loader, desc="[Train]", leave=False):
             batch = batch.to(device).long()
 
-            log_liks = (circuit(batch) - partition_function()).flatten()
-            loss = -log_liks.mean()
+            loss = nll_fn(batch)
 
             train_loss_sum += loss.item() * batch.size(0)
             train_count += batch.size(0)
@@ -272,8 +302,7 @@ def train_circuit(
                 with torch.inference_mode():
                     for (val_batch,) in val_loader:
                         val_batch = val_batch.to(device).long()
-                        log_liks = (circuit(val_batch) - partition_function()).flatten()
-                        val_loss_sum += (-log_liks.mean()).item() * val_batch.size(0)
+                        val_loss_sum += nll_fn(val_batch).item() * val_batch.size(0)
                         val_count += val_batch.size(0)
 
                 avg_train_nll = train_loss_sum / train_count
@@ -343,16 +372,18 @@ def evaluate_circuit(
     device,
     num_dimensions,
     log_to_wandb=True,
+    nll_fn=None,
 ):
     circuit.eval()
+    if nll_fn is None:
+        nll_fn = make_nll_function(circuit, circuit_partition_function)
 
     test_nll_sum = 0.0
     test_count = 0
 
     for (batch,) in tqdm(test_loader, desc="[Test]", leave=False):
         batch = batch.to(device).long()
-        log_liks = circuit(batch) - circuit_partition_function()
-        loss = -log_liks.mean()
+        loss = nll_fn(batch)
         test_nll_sum += loss.item() * batch.size(0)
         test_count += batch.size(0)
 
@@ -417,6 +448,23 @@ if __name__ == "__main__":
     parser.add_argument("--min-delta", type=float, default=0.0)
     parser.add_argument("--valid-split", type=float, default=0.05)
     parser.add_argument("--use-scheduler", action="store_true", help="use cosine annealing scheduler")
+    parser.add_argument(
+        "--torch-compile", action="store_true",
+        help="compile the NLL (circuit and partition function) for training, validation and test",
+    )
+    parser.add_argument(
+        "--compile-backend", default="inductor", choices=["inductor", "eager", "aot_eager"],
+        help="torch.compile backend; eager/aot_eager are for compiler diagnostics",
+    )
+    parser.add_argument(
+        "--compile-mode", default="default",
+        choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+        help="Inductor compilation mode",
+    )
+    parser.add_argument(
+        "--compile-fullgraph", action="store_true",
+        help="require one compiled graph; fail on graph breaks instead of allowing partial capture",
+    )
 
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save-path", type=str, default="best_circuit.pt")
@@ -441,6 +489,8 @@ if __name__ == "__main__":
         help="batch size for MIWAE feature extraction during LearnSPN weight estimation",
     )
     args = parser.parse_args()
+    if args.torch_compile and args.compile_backend != "inductor" and args.compile_mode != "default":
+        parser.error("Non-default --compile-mode requires --compile-backend=inductor")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(args.seed)
@@ -490,6 +540,8 @@ if __name__ == "__main__":
     )
 
     logger.info("Using LearnSPN")
+    from cirkit.templates.learn_spn import LearnSPN
+
     spn_learner = LearnSPN(**learner_kwargs)
     structure_data = limit_samples(X_train, args.structure_samples, args.seed + 3)
     logger.info(f"Using {len(structure_data)} samples to build/estimate the circuit")
@@ -523,6 +575,14 @@ if __name__ == "__main__":
 
     circuit = ctx.compile(symbolic_circuit).to(device)
     circuit_partition_function = ctx.compile(symbolic_partition_function).to(device)
+    nll_fn = make_nll_function(
+        circuit,
+        circuit_partition_function,
+        use_compile=args.torch_compile,
+        backend=args.compile_backend,
+        mode=args.compile_mode,
+        fullgraph=args.compile_fullgraph,
+    )
 
     logger.info(f"Number of parameters: {sum(p.numel() for p in circuit.parameters())}")
 
@@ -552,6 +612,7 @@ if __name__ == "__main__":
         log_to_wandb=args.wandb,
         activation=args.activation,
         use_scheduler=args.use_scheduler,
+        nll_fn=nll_fn,
     )
 
     torch.cuda.empty_cache()
@@ -566,6 +627,7 @@ if __name__ == "__main__":
         device=device,
         num_dimensions=num_dimensions,
         log_to_wandb=args.wandb,
+        nll_fn=nll_fn,
     )
     if args.wandb:
         run.finish()
