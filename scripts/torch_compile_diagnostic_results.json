@@ -1,0 +1,299 @@
+{
+  "torch": "2.12.0+cpu",
+  "python": "3.12.7",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "cuda": false,
+  "backend": "aot_eager",
+  "cases": [
+    {
+      "name": "categorical",
+      "fold": false,
+      "optimize": false,
+      "semiring": "sum-product",
+      "layers": [
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchHadamardLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer",
+        "TorchSumLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 20.267
+    },
+    {
+      "name": "categorical",
+      "fold": false,
+      "optimize": false,
+      "semiring": "lse-sum",
+      "layers": [
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchHadamardLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer",
+        "TorchSumLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 14.334
+    },
+    {
+      "name": "categorical",
+      "fold": false,
+      "optimize": true,
+      "semiring": "sum-product",
+      "layers": [
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 10.789
+    },
+    {
+      "name": "categorical",
+      "fold": false,
+      "optimize": true,
+      "semiring": "lse-sum",
+      "layers": [
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCategoricalLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 11.052
+    },
+    {
+      "name": "categorical",
+      "fold": true,
+      "optimize": false,
+      "semiring": "sum-product",
+      "layers": [
+        "TorchCategoricalLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 9.029
+    },
+    {
+      "name": "categorical",
+      "fold": true,
+      "optimize": false,
+      "semiring": "lse-sum",
+      "layers": [
+        "TorchCategoricalLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 9.298
+    },
+    {
+      "name": "categorical",
+      "fold": true,
+      "optimize": true,
+      "semiring": "sum-product",
+      "layers": [
+        "TorchCategoricalLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 6.398
+    },
+    {
+      "name": "categorical",
+      "fold": true,
+      "optimize": true,
+      "semiring": "lse-sum",
+      "layers": [
+        "TorchCategoricalLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 8.253
+    },
+    {
+      "name": "gaussian",
+      "fold": true,
+      "optimize": true,
+      "semiring": "lse-sum",
+      "layers": [
+        "TorchGaussianLayer",
+        "TorchSumLayer",
+        "TorchCPTLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 6.802
+    },
+    {
+      "name": "runtime_integrate_query",
+      "status": "FAIL",
+      "error": "UserError: Consider annotating your code using torch._check*(). Could not guard on data-dependent expression Eq(u0, 1) (unhinted: Eq(u0, 1)).  (Size-like symbols: none)\n\nconsider using data-dependent friendly APIs such as guard_or_false, guard_or_true and statically_known_true.\nCaused by: if not torch.any(integration_mask).item():  # OneDrive\\Desktop\\DL-projects-repo\\cirkit\\cirkit\\backend\\torch\\queries.py:136 in _layer_fn (_dynamo\\variables\\tensor.py:2242 in evaluate_expr)\nFor more information, run with TORCH_LOGS=\"dynamic\"\nFor extended logs when we create symbols, also add TORCHDYNAMO_EXTENDED_DEBUG_CREATE_SYMBOL=\"u0\"\nIf you suspect the guard was triggered from C++, add TORCHDYNAMO_EXTENDED_DEBUG_CPP=1\nFor more debugging help, see https://docs.google.com/document/d/1HSuTTVvYH1pTew89Rtpeu84Ht3nQEFTYhAX3Ypa_xJs/edit?usp=sharing\n\nUser Stack (most recent call last):\n  (snipped, see stack below for prefix)\n  File \"C:\\Users\\gianp\\OneDrive\\Desktop\\DL-projects-repo\\cirkit\\scripts\\diagnose_torch_compile.py\", line 108, in query_step\n    return query(data, integrate_vars=integration_mask)\n  File \"C:\\Users\\gianp\\OneDrive\\Desktop\\DL-projects-repo\\cirkit\\cirkit\\backend\\torch\\queries.py\", line 103, in __call__\n    output = self._circuit.evaluate(\n  File \"C:\\Users\\gianp\\OneDrive\\Desktop\\DL-projects-repo\\cirkit\\cirkit\\backend\\torch\\graph\\modules.py\", line 333, in evaluate\n    y = module_fn(module, *inputs)\n  File \"C:\\Users\\gianp\\OneDrive\\Desktop\\DL-projects-repo\\cirkit\\cirkit\\backend\\torch\\queries.py\", line 136, in _layer_fn\n    if not torch.any(integration_mask).item():\n\nFor C++ stack trace, run with TORCHDYNAMO_EXTENDED_DEBUG_CPP=1\nFor more information about this error, see: https://pytorch.org/docs/main/generated/exportdb/index.html#constrain-as-size-example\n\nfrom user code:\n   File \"C:\\Users\\gianp\\OneDrive\\Desktop\\DL-projects-repo\\cirkit\\scripts\\diagnose_torch_compile.py\", line 108, in query_step\n    return query(data, integrate_vars=integration_mask)\n  File \"C:\\Users\\gianp\\OneDrive\\Desktop\\DL-projects-repo\\cirkit\\cirkit\\backend\\torch\\queries.py\", line 103, in __call__\n    output = self._circuit.evaluate(\n  File \"C:\\Users\\gianp\\OneDrive\\Desktop\\DL-projects-repo\\cirkit\\cirkit\\backend\\torch\\graph\\modules.py\", line 333, in evaluate\n    y = module_fn(module, *inputs)\n  File \"C:\\Users\\gianp\\OneDrive\\Desktop\\DL-projects-repo\\cirkit\\cirkit\\backend\\torch\\queries.py\", line 136, in _layer_fn\n    if not torch.any(integration_mask).item():\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n"
+    },
+    {
+      "name": "torchscript_script",
+      "status": "FAIL",
+      "error": "NotSupportedError: Comprehension ifs are not supported yet:\n  File \"C:\\Users\\gianp\\OneDrive\\Desktop\\DL-projects-repo\\cirkit\\cirkit\\utils\\algorithms.py\", line 148\n    @property\n    def inputs(self) -> Iterator[NodeT]:\n        return (n for n in self._nodes if not self.node_inputs(n))\n"
+    },
+    {
+      "name": "quadgraph-cp",
+      "fold": true,
+      "optimize": true,
+      "semiring": "lse-sum",
+      "layers": [
+        "TorchCategoricalLayer",
+        "TorchSumLayer",
+        "TorchCPTLayer",
+        "TorchHadamardLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer",
+        "TorchSumLayer",
+        "TorchCPTLayer",
+        "TorchSumLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer",
+        "TorchSumLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 26.739
+    },
+    {
+      "name": "quadgraph-tucker",
+      "fold": true,
+      "optimize": true,
+      "semiring": "lse-sum",
+      "layers": [
+        "TorchCategoricalLayer",
+        "TorchTuckerLayer",
+        "TorchTuckerLayer",
+        "TorchSumLayer",
+        "TorchTuckerLayer",
+        "TorchTuckerLayer",
+        "TorchSumLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 15.45
+    },
+    {
+      "name": "rgb-full-sharing",
+      "fold": true,
+      "optimize": true,
+      "semiring": "lse-sum",
+      "layers": [
+        "TorchMultichannelCategoricalLayer",
+        "TorchSumLayer",
+        "TorchCPTLayer",
+        "TorchHadamardLayer",
+        "TorchHadamardLayer",
+        "TorchSumLayer",
+        "TorchSumLayer",
+        "TorchCPTLayer",
+        "TorchSumLayer",
+        "TorchCPTLayer",
+        "TorchCPTLayer",
+        "TorchSumLayer"
+      ],
+      "graphs": 1,
+      "graph_breaks": 0,
+      "reasons": [],
+      "status": "PASS forward, parameter gradients, changed input/batch",
+      "elapsed_seconds": 34.048
+    }
+  ],
+  "inductor_probe": {
+    "torch": "2.12.0+cpu",
+    "python": "3.12.7",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "cuda": false,
+    "backend": "inductor",
+    "cases": [
+      {
+        "name": "categorical",
+        "fold": true,
+        "optimize": true,
+        "semiring": "lse-sum",
+        "status": "FAIL",
+        "error": "InductorError: RuntimeError: Compiler: cl is not found.\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n",
+        "elapsed_seconds": 14.481
+      }
+    ]
+  },
+  "method_notes": [
+    "QuadGraph cases initially used default signed weights and produced NaN in eager as well as compiled execution. They were corrected to positive uniform weights and rerun; final results are recorded here.",
+    "RGB case reproduces the symbolic RGB/full-sharing baseline construction directly; LearnSPN itself was not imported because fast_pytorch_kmeans is unavailable.",
+    "No GPU or Inductor performance measurements. aot_eager checks Dynamo capture and AOTAutograd, not generated native kernels.",
+    "Case timings include diagnostics and compilation and are not speed benchmarks."
+  ]
+}
