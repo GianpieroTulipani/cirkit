@@ -272,14 +272,15 @@ def train_circuit(
     stop = False
     while total_steps < max_train_steps and not stop:
         circuit.train()
-        train_loss_sum = 0.0
+        # Keep detached metrics on-device; .item() per batch would synchronize CUDA.
+        train_loss_sum = torch.zeros((), dtype=torch.float64, device=device)
         train_count = 0
         for (batch,) in tqdm(train_loader, desc="[Train]", leave=False):
             batch = batch.to(device).long()
 
             loss = nll_fn(batch)
 
-            train_loss_sum += loss.item() * batch.size(0)
+            train_loss_sum.add_(loss.detach().to(torch.float64), alpha=batch.size(0))
             train_count += batch.size(0)
 
             optimizer.zero_grad()
@@ -296,17 +297,18 @@ def train_circuit(
             total_steps += 1
 
             if total_steps % validation_steps == 0:
+                logger.info(f"Validation at training step {total_steps} ({len(val_loader)} batches)")
                 circuit.eval()
-                val_loss_sum = 0.0
+                val_loss_sum = torch.zeros((), dtype=torch.float64, device=device)
                 val_count = 0
                 with torch.inference_mode():
-                    for (val_batch,) in val_loader:
+                    for (val_batch,) in tqdm(val_loader, desc=f"[Val step {total_steps}]", leave=False):
                         val_batch = val_batch.to(device).long()
-                        val_loss_sum += nll_fn(val_batch).item() * val_batch.size(0)
+                        val_loss_sum.add_(nll_fn(val_batch).to(torch.float64), alpha=val_batch.size(0))
                         val_count += val_batch.size(0)
 
-                avg_train_nll = train_loss_sum / train_count
-                avg_val_nll = val_loss_sum / val_count
+                avg_train_nll = train_loss_sum.item() / train_count
+                avg_val_nll = val_loss_sum.item() / val_count
                 bpd_train = avg_train_nll / (num_dimensions * np.log(2.0))
                 bpd_val = avg_val_nll / (num_dimensions * np.log(2.0))
 
@@ -378,16 +380,16 @@ def evaluate_circuit(
     if nll_fn is None:
         nll_fn = make_nll_function(circuit, circuit_partition_function)
 
-    test_nll_sum = 0.0
+    test_nll_sum = torch.zeros((), dtype=torch.float64, device=device)
     test_count = 0
 
     for (batch,) in tqdm(test_loader, desc="[Test]", leave=False):
         batch = batch.to(device).long()
         loss = nll_fn(batch)
-        test_nll_sum += loss.item() * batch.size(0)
+        test_nll_sum.add_(loss.to(torch.float64), alpha=batch.size(0))
         test_count += batch.size(0)
 
-    avg_test_nll = test_nll_sum / test_count
+    avg_test_nll = test_nll_sum.item() / test_count
     avg_test_bpd = avg_test_nll / (num_dimensions * np.log(2.0))
 
     logger.info(f"Test NLL: {avg_test_nll:.4f} | bpd: {avg_test_bpd:.4f}")
