@@ -496,8 +496,10 @@ def _fold_parameter_nodes_group(
         in_folded_node = node_pointer.deref()
         fold_idx_offset = 0
 
-        sp = compiler.state.retrieve_symbolic_parameter(in_folded_node)
-        in_folded_node, fold_idx_offset = compiler.state.retrieve_compiled_parameter(sp)
+
+        if compiler.state.has_compiled_parameter(in_folded_node):
+            sp = compiler.state.retrieve_symbolic_parameter(in_folded_node)
+            in_folded_node, fold_idx_offset = compiler.state.retrieve_compiled_parameter(sp)
 
         in_fold_idx: list[int] = [
             fold_idx_offset + i
