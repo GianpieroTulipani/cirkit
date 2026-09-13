@@ -107,10 +107,10 @@ class LearnSPN:
 
     def _apply_symmetry_breaking(self, theta: np.ndarray, activation: str) -> np.ndarray:
         s = self.noise_scale
-        """if activation == "clamp" or activation == "none":
+        if activation == "clamp" or activation == "none":
             # spazio lineare: rumore moltiplicativo positivo
             noisy = theta * np.exp(np.random.normal(loc=0.0, scale=s, size=theta.shape))
-            return np.clip(noisy, float(np.sqrt(np.finfo(np.float32).tiny)), None)"""
+            return np.clip(noisy, float(np.sqrt(np.finfo(np.float32).tiny)), None)
         
         return theta + np.random.normal(loc=0.0, scale=s, size=theta.shape)
 
