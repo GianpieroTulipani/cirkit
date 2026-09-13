@@ -495,11 +495,9 @@ def _fold_parameter_nodes_group(
         # parameter graph and therefore never gets initialized.
         in_folded_node = node_pointer.deref()
         fold_idx_offset = 0
-        try:
-            sp = compiler.state.retrieve_symbolic_parameter(in_folded_node)
-            in_folded_node, fold_idx_offset = compiler.state.retrieve_compiled_parameter(sp)
-        except KeyError:
-            pass
+
+        sp = compiler.state.retrieve_symbolic_parameter(in_folded_node)
+        in_folded_node, fold_idx_offset = compiler.state.retrieve_compiled_parameter(sp)
 
         in_fold_idx: list[int] = [
             fold_idx_offset + i

@@ -1,6 +1,5 @@
-import os
-import gc
 import argparse
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -9,33 +8,20 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
-try:
-    import wandb
-except ImportError:
-    wandb = None
-
-try:
-    from torchvision import datasets
-except ImportError:
-    datasets = None
-
-try:
-    from loguru import logger
-except ImportError:
-    class _Logger:
-        @staticmethod
-        def info(message):
-            print(message)
-
-        @staticmethod
-        def success(message):
-            print(message)
-
-    logger = _Logger()
-
 import cirkit.symbolic.functional as sf
 from cirkit.backend.torch.layers import TorchInputLayer
 from cirkit.pipeline import PipelineContext
+from cirkit.templates.learn_spn import LearnSPN
+
+
+logger = logging.getLogger(__name__)
+
+
+def _log_wandb(values: dict) -> None:
+    """Log metrics only when Weights & Biases is explicitly enabled."""
+    import wandb
+
+    wandb.log(values)
 
 
 def _forward_lift(x: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -70,7 +56,9 @@ def apply_color_transform(images: torch.Tensor, ycc: str) -> torch.Tensor:
     if ycc == "none":
         return images.long()
     if images.ndim != 4 or images.size(1) != 3:
-        raise ValueError(f"YCoCg transforms require RGB tensors of shape (N, 3, H, W), found {tuple(images.shape)}")
+        raise ValueError(
+            f"YCoCg transforms require RGB tensors of shape (N, 3, H, W), found {tuple(images.shape)}"
+        )
     if ycc == "lossy":
         return rgb_to_ycocg_lossy(images)
     if ycc == "lossless":
@@ -83,7 +71,9 @@ def flatten_images(images: torch.Tensor, ycc: str) -> torch.Tensor:
     return images.reshape(images.size(0), -1).to(torch.uint8)
 
 
-def _infer_flat_shape(data: torch.Tensor, image_shape: tuple[int, int, int] | None) -> tuple[int, int, int]:
+def _infer_flat_shape(
+    data: torch.Tensor, image_shape: tuple[int, int, int] | None
+) -> tuple[int, int, int]:
     if image_shape is None:
         raise ValueError("--image-shape C H W is required for flat tensor datasets")
     expected = int(np.prod(image_shape))
@@ -123,7 +113,9 @@ def _load_local_tensor_dataset(
     if train.ndim == 4:
         shape = tuple(train.shape[1:])
         if len(shape) != 3:
-            raise ValueError(f"Expected image tensors of shape (N, C, H, W), found {tuple(train.shape)}")
+            raise ValueError(
+                f"Expected image tensors of shape (N, C, H, W), found {tuple(train.shape)}"
+            )
         train = flatten_images(train, ycc)
         valid = flatten_images(valid, ycc) if valid is not None and valid.ndim == 4 else valid
         test = flatten_images(test, ycc) if test.ndim == 4 else test
@@ -140,17 +132,27 @@ def _load_local_tensor_dataset(
     return train, valid, test, shape
 
 
-def _load_vision_dataset(dataset: str, root: str, ycc: str) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int, int]]:
-    if datasets is None:
-        raise ImportError("Install torchvision to load mnist, fashion-mnist, or cifar10")
+def _load_vision_dataset(
+    dataset: str, root: str, ycc: str
+) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int, int]]:
+    from torchvision import datasets
+
     if dataset == "mnist":
         train_ds = datasets.MNIST(root=root, train=True, download=True)
         test_ds = datasets.MNIST(root=root, train=False, download=True)
-        return flatten_images(train_ds.data[:, None], ycc), flatten_images(test_ds.data[:, None], ycc), (1, 28, 28)
+        return (
+            flatten_images(train_ds.data[:, None], ycc),
+            flatten_images(test_ds.data[:, None], ycc),
+            (1, 28, 28),
+        )
     if dataset == "fashion-mnist":
         train_ds = datasets.FashionMNIST(root=root, train=True, download=True)
         test_ds = datasets.FashionMNIST(root=root, train=False, download=True)
-        return flatten_images(train_ds.data[:, None], ycc), flatten_images(test_ds.data[:, None], ycc), (1, 28, 28)
+        return (
+            flatten_images(train_ds.data[:, None], ycc),
+            flatten_images(test_ds.data[:, None], ycc),
+            (1, 28, 28),
+        )
     if dataset in {"cifar", "cifar10"}:
         train_ds = datasets.CIFAR10(root=root, train=True, download=True)
         test_ds = datasets.CIFAR10(root=root, train=False, download=True)
@@ -160,7 +162,9 @@ def _load_vision_dataset(dataset: str, root: str, ycc: str) -> tuple[torch.Tenso
     raise ValueError(f"Unsupported torchvision dataset {dataset!r}")
 
 
-def load_discrete_image_dataset(args) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, int, int]]:
+def load_discrete_image_dataset(
+    args,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, tuple[int, int, int]]:
     image_shape = tuple(args.image_shape) if args.image_shape is not None else None
     if args.dataset in {"tensor", "imagenet32", "imagenet64", "celeba"}:
         if args.dataset == "imagenet32" and image_shape is None:
@@ -180,23 +184,10 @@ def load_discrete_image_dataset(args) -> tuple[torch.Tensor, torch.Tensor, torch
                 f"valid_split={args.valid_split} gives train/val sizes {n_train}/{n_val}; "
                 "use a larger dataset or a split in (0, 1)"
             )
-        train_subset, val_subset = torch.utils.data.random_split(
-            train,
-            [n_train, n_val],
-            generator=torch.Generator().manual_seed(args.seed),
-        )
-        train = train[torch.as_tensor(train_subset.indices)]
-        valid = train_subset.dataset[torch.as_tensor(val_subset.indices)]
+        indices = torch.randperm(len(train), generator=torch.Generator().manual_seed(args.seed))
+        train, valid = train[indices[:n_train]], train[indices[n_train:]]
 
     return train.to(torch.uint8), valid.to(torch.uint8), test.to(torch.uint8), shape
-
-
-def limit_samples(data: torch.Tensor, max_samples: int | None, seed: int) -> torch.Tensor:
-    if max_samples is None or max_samples <= 0 or max_samples >= len(data):
-        return data
-    generator = torch.Generator().manual_seed(seed)
-    indices = torch.randperm(len(data), generator=generator)[:max_samples]
-    return data[indices]
 
 
 def make_nll_function(
@@ -214,6 +205,7 @@ def make_nll_function(
     callable reads their current parameters, including after loading a checkpoint.
     Data transfer, logging and optimizer updates stay outside the compiled region.
     """
+
     def nll(batch):
         return -(circuit(batch) - partition_function()).mean()
 
@@ -226,6 +218,17 @@ def make_nll_function(
         "The first training and evaluation batches include compilation overhead."
     )
     return torch.compile(nll, backend=backend, mode=mode, fullgraph=fullgraph)
+
+
+@torch.inference_mode()
+def _mean_nll(nll_fn, data_loader, device: torch.device) -> float:
+    loss_sum = torch.zeros((), dtype=torch.float64, device=device)
+    sample_count = 0
+    for (batch,) in data_loader:
+        batch = batch.to(device).long()
+        loss_sum.add_(nll_fn(batch).to(torch.float64), alpha=batch.size(0))
+        sample_count += batch.size(0)
+    return loss_sum.item() / sample_count
 
 
 def train_circuit(
@@ -253,10 +256,13 @@ def train_circuit(
     if nll_fn is None:
         nll_fn = make_nll_function(circuit, partition_function)
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
-    if use_scheduler:
-        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    scheduler = (
+        optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, T_0=T_0, T_mult=1, eta_min=eta_min
         )
+        if use_scheduler
+        else None
+    )
 
     best_val_nll = float("inf")
     epochs_no_improve = 0
@@ -269,8 +275,7 @@ def train_circuit(
 
     print(f"Starting training for a maximum of {max_train_steps} steps.\n")
 
-    stop = False
-    while total_steps < max_train_steps and not stop:
+    while total_steps < max_train_steps and epochs_no_improve < patience:
         circuit.train()
         # Keep detached metrics on-device; .item() per batch would synchronize CUDA.
         train_loss_sum = torch.zeros((), dtype=torch.float64, device=device)
@@ -286,7 +291,7 @@ def train_circuit(
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            if use_scheduler:
+            if scheduler is not None:
                 scheduler.step()
 
             if activation == "clamp":
@@ -298,22 +303,13 @@ def train_circuit(
 
             if total_steps % validation_steps == 0:
                 circuit.eval()
-                val_loss_sum = torch.zeros((), dtype=torch.float64, device=device)
-                val_count = 0
-                with torch.inference_mode():
-                    for (val_batch,) in val_loader:
-                        val_batch = val_batch.to(device).long()
-                        val_loss_sum.add_(nll_fn(val_batch).to(torch.float64), alpha=val_batch.size(0))
-                        val_count += val_batch.size(0)
-
                 avg_train_nll = train_loss_sum.item() / train_count
-                avg_val_nll = val_loss_sum.item() / val_count
+                avg_val_nll = _mean_nll(nll_fn, val_loader, device)
                 bpd_train = avg_train_nll / (num_dimensions * np.log(2.0))
                 bpd_val = avg_val_nll / (num_dimensions * np.log(2.0))
 
                 if log_to_wandb:
-                    assert wandb is not None
-                    wandb.log(
+                    _log_wandb(
                         {
                             "step": total_steps,
                             "train_nll": avg_train_nll,
@@ -328,24 +324,24 @@ def train_circuit(
                     torch.save(circuit.state_dict(), save_path)
                     saved_best = True
                     epochs_no_improve = 0
-                    logger.success(
+                    logger.info(
                         f"New best model at step {total_steps}, Train NLL: {avg_train_nll:.4f}, "
                         f"Train bpd: {bpd_train:.4f}, Val NLL: {best_val_nll:.4f}, "
                         f"Val bpd: {bpd_val:.4f}"
                     )
                 else:
                     epochs_no_improve += 1
-                    logger.info(f"No improvement at step {total_steps}, count: {epochs_no_improve}/{patience}")
+                    logger.info(
+                        f"No improvement at step {total_steps}, count: {epochs_no_improve}/{patience}"
+                    )
 
                 if epochs_no_improve >= patience:
                     logger.info("Early stopping triggered.")
-                    stop = True
                     break
 
                 circuit.train()
 
             if total_steps >= max_train_steps:
-                stop = True
                 break
 
     if not saved_best:
@@ -353,7 +349,6 @@ def train_circuit(
         logger.info(f"No validation checkpoint was saved; saved current model to {save_path}.")
 
     if log_to_wandb:
-        assert wandb is not None
         final_logs = {"saved_best_checkpoint": saved_best}
         if avg_train_nll is not None:
             final_logs["final_train_nll"] = avg_train_nll
@@ -362,7 +357,7 @@ def train_circuit(
             final_logs["final_val_nll"] = avg_val_nll
             final_logs["final_val_bpd"] = bpd_val
             final_logs["best_val_nll"] = best_val_nll
-        wandb.log(final_logs)
+        _log_wandb(final_logs)
 
 
 @torch.inference_mode()
@@ -379,116 +374,87 @@ def evaluate_circuit(
     if nll_fn is None:
         nll_fn = make_nll_function(circuit, circuit_partition_function)
 
-    test_nll_sum = torch.zeros((), dtype=torch.float64, device=device)
-    test_count = 0
-
-    for (batch,) in tqdm(test_loader, desc="[Test]", leave=False):
-        batch = batch.to(device).long()
-        loss = nll_fn(batch)
-        test_nll_sum.add_(loss.to(torch.float64), alpha=batch.size(0))
-        test_count += batch.size(0)
-
-    avg_test_nll = test_nll_sum.item() / test_count
+    avg_test_nll = _mean_nll(nll_fn, tqdm(test_loader, desc="[Test]", leave=False), device)
     avg_test_bpd = avg_test_nll / (num_dimensions * np.log(2.0))
 
     logger.info(f"Test NLL: {avg_test_nll:.4f} | bpd: {avg_test_bpd:.4f}")
 
     if log_to_wandb:
-        assert wandb is not None
-        wandb.log({"test_nll": avg_test_nll, "test_bpd": avg_test_bpd})
+        _log_wandb({"test_nll": avg_test_nll, "test_bpd": avg_test_bpd})
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train a probabilistic circuit on discrete image datasets")
-    parser.add_argument(
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Train a PC on a discrete image dataset")
+    add = parser.add_argument
+
+    # Data and model
+    add(
         "--dataset",
-        type=str,
         default="mnist",
-        choices=["mnist", "fashion-mnist", "cifar", "cifar10", "celeba", "imagenet32", "imagenet64", "tensor"],
-        help="dataset to train on",
+        choices=[
+            "mnist",
+            "fashion-mnist",
+            "cifar",
+            "cifar10",
+            "celeba",
+            "imagenet32",
+            "imagenet64",
+            "tensor",
+        ],
     )
-    parser.add_argument("--rg", type=str, default="quad-tree-2", choices=["quad-tree-2", "quad-tree-4", "quad-graph"])
-    parser.add_argument("--inner-layer", type=str, default="cp", choices=["cp", "tucker"])
-    parser.add_argument("--k", type=int, default=512, help="num units per layer")
-    parser.add_argument(
-        "--activation",
-        type=str,
-        default="clamp",
-        choices=["clamp", "softmax", "softplus", "sigmoid", "none"],
-        help="activation function for sum units",
+    add("--root", default="datasets")
+    add("--image-shape", type=int, nargs=3, metavar=("C", "H", "W"))
+    add("--ycc", default="none", choices=["none", "lossy", "lossless"])
+    add("--input-sharing", default="none", choices=["none", "full"])
+    add("--rg", default="quad-tree-2", choices=["quad-tree-2", "quad-tree-4", "quad-graph"])
+    add("--inner-layer", default="cp", choices=["cp", "tucker"])
+    add("--k", type=int, default=512)
+    add(
+        "--activation", default="clamp", choices=["clamp", "softmax", "softplus", "sigmoid", "none"]
     )
-    parser.add_argument("--weights-init", type=str, default="uniform", choices=["uniform", "normal", "dirichlet"])
-    parser.add_argument("--root", type=str, default="datasets", help="dataset root or local tensor directory")
-    parser.add_argument("--image-shape", type=int, nargs=3, metavar=("C", "H", "W"), default=None)
-    parser.add_argument("--ycc", type=str, default="none", choices=["none", "lossy", "lossless"])
-    parser.add_argument(
-        "--input-sharing",
-        type=str,
-        default="none",
-        choices=["none", "full", "channel", "global"],
-        help="'full' matches ten-pics full_sharing for RGB inputs; 'channel' is accepted as an alias",
-    )
+    add("--weights-init", default="uniform", choices=["uniform", "normal", "dirichlet"])
 
-    parser.add_argument("--lr", type=float, default=0.01)
-    parser.add_argument("--T_0", type=int, default=1, help="T_0 for cosine annealing")
-    parser.add_argument("--eta-min", type=float, default=0.0001)
-    parser.add_argument("--weight-decay", type=float, default=0.0)
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--max-epochs", type=int, default=200)
-    parser.add_argument("--max-train-samples", type=int, default=None, help="limit training samples after loading")
-    parser.add_argument("--max-val-samples", type=int, default=None, help="limit validation samples after loading")
-    parser.add_argument("--max-test-samples", type=int, default=None, help="limit test samples after loading")
-    parser.add_argument(
-        "--structure-samples",
-        type=int,
-        default=None,
-        help="number of training samples used to build and estimate the initial circuit",
-    )
-    parser.add_argument("--validation-steps", type=int, default=250, help="validation every n steps")
-    parser.add_argument("--patience", type=int, default=5)
-    parser.add_argument("--min-delta", type=float, default=0.0)
-    parser.add_argument("--valid-split", type=float, default=0.05)
-    parser.add_argument("--use-scheduler", action="store_true", help="use cosine annealing scheduler")
-    parser.add_argument(
-        "--torch-compile", action="store_true",
-        help="compile the NLL (circuit and partition function) for training, validation and test",
-    )
-    parser.add_argument(
-        "--compile-backend", default="inductor", choices=["inductor", "eager", "aot_eager"],
-        help="torch.compile backend; eager/aot_eager are for compiler diagnostics",
-    )
-    parser.add_argument(
-        "--compile-mode", default="default",
+    # Training
+    add("--lr", type=float, default=0.01)
+    add("--T_0", type=int, default=1)
+    add("--eta-min", type=float, default=0.0001)
+    add("--weight-decay", type=float, default=0.0)
+    add("--batch-size", type=int, default=256)
+    add("--max-epochs", type=int, default=200)
+    add("--validation-steps", type=int, default=250)
+    add("--patience", type=int, default=5)
+    add("--min-delta", type=float, default=0.0)
+    add("--valid-split", type=float, default=0.05)
+    add("--use-scheduler", action="store_true")
+
+    # Initialization
+    add("--alpha", type=float, default=5.0)
+    add("--noise-scale", type=float, default=2.0)
+    add("--adaptive-alpha", action="store_true")
+    add("--use-mixing-weights", action="store_true")
+    add("--use-estimated-weights", action="store_true")
+
+    # Optional features
+    add("--use-miwae", action="store_true")
+    add("--torch-compile", action="store_true")
+    add("--compile-backend", default="inductor", choices=["inductor", "eager", "aot_eager"])
+    add(
+        "--compile-mode",
+        default="default",
         choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
-        help="Inductor compilation mode",
     )
-    parser.add_argument(
-        "--compile-fullgraph", action="store_true",
-        help="require one compiled graph; fail on graph breaks instead of allowing partial capture",
-    )
+    add("--compile-fullgraph", action="store_true")
+    add("--wandb", action="store_true")
+    add("--project", default="pc_dataset_eval")
 
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--save-path", type=str, default="best_circuit.pt")
-    parser.add_argument("--wandb", action="store_true", help="log to wandb")
-    parser.add_argument("--project", type=str, default="pc_dataset_eval", help="wandb project name")
-    parser.add_argument("--alpha", type=float, default=5.0)
-    parser.add_argument("--noise-scale", type=float, default=2.0)
-    parser.add_argument("--use-miwae", action="store_true", help="use MIWAE for LearnSPN")
-    parser.add_argument("--adaptive-alpha", action="store_true", help="use adaptive alpha for LearnSPN")
-    parser.add_argument("--use-mixing-weights", action="store_true", help="use mixing weights for LearnSPN")
-    parser.add_argument("--use-estimated-weights", action="store_true", help="use estimated weights for LearnSPN")
-    parser.add_argument(
-        "--estimation-device",
-        type=str,
-        default=None,
-        help="device used by LearnSPN while estimating weights, e.g. cpu or cuda",
-    )
-    parser.add_argument(
-        "--miwae-batch-size",
-        type=int,
-        default=1024,
-        help="batch size for MIWAE feature extraction during LearnSPN weight estimation",
-    )
+    add("--seed", type=int, default=42)
+    add("--save-path", default="best_circuit.pt")
+    return parser
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    parser = build_parser()
     args = parser.parse_args()
     if args.torch_compile and args.compile_backend != "inductor" and args.compile_mode != "default":
         parser.error("Non-default --compile-mode requires --compile-backend=inductor")
@@ -504,57 +470,47 @@ if __name__ == "__main__":
     print("=" * 70)
 
     if args.wandb:
-        if wandb is None:
-            raise ImportError("Install wandb or run without --wandb")
+        import wandb
+
         wandb.login()
         run = wandb.init(project=args.project, config=vars(args))
+    else:
+        run = None
 
     X_train, X_val, X_test, image_shape = load_discrete_image_dataset(args)
-    X_train = limit_samples(X_train, args.max_train_samples, args.seed)
-    X_val = limit_samples(X_val, args.max_val_samples, args.seed + 1)
-    X_test = limit_samples(X_test, args.max_test_samples, args.seed + 2)
-    logger.info(f"Loaded {args.dataset}: train={tuple(X_train.shape)}, val={tuple(X_val.shape)}, test={tuple(X_test.shape)}")
-    logger.info(f"Using image_shape={image_shape}, ycc={args.ycc}, input_sharing={args.input_sharing}")
+    logger.info(
+        f"Loaded {args.dataset}: train={tuple(X_train.shape)}, val={tuple(X_val.shape)}, test={tuple(X_test.shape)}"
+    )
+    logger.info(
+        f"Using image_shape={image_shape}, ycc={args.ycc}, input_sharing={args.input_sharing}"
+    )
 
     train_loader = DataLoader(TensorDataset(X_train), batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(TensorDataset(X_val), batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(TensorDataset(X_test), batch_size=args.batch_size, shuffle=False)
 
-    weight_dir = os.path.join(os.getcwd(), "best_categorical_miwae.pt")
-
     if args.use_miwae and image_shape[0] != 1:
-        raise ValueError("MIWAE support in this script is currently limited to single-channel images")
+        raise ValueError(
+            "MIWAE support in this script is currently limited to single-channel images"
+        )
 
-    learner_kwargs = dict(
+    logger.info("Using LearnSPN")
+    spn_learner = LearnSPN(
         alpha=args.alpha,
         noise_scale=args.noise_scale,
         use_miwae=args.use_miwae,
         data_format="image",
         image_shape=image_shape,
         device=device,
-        weight_dir=weight_dir,
+        weight_dir=str(Path.cwd() / "best_categorical_miwae.pt"),
         adaptive_alpha=args.adaptive_alpha,
         input_sharing=args.input_sharing,
         num_categories=256,
-        estimation_device=args.estimation_device,
-        miwae_batch_size=args.miwae_batch_size,
     )
-
-    logger.info("Using LearnSPN")
-    from cirkit.templates.learn_spn import LearnSPN
-
-    spn_learner = LearnSPN(**learner_kwargs)
-    structure_data = limit_samples(X_train, args.structure_samples, args.seed + 3)
-    logger.info(f"Using {len(structure_data)} samples to build/estimate the circuit")
-
-    estimation_device = torch.device(args.estimation_device) if args.estimation_device else device
-    if args.use_estimated_weights:
-        structure_data_for_build = structure_data.to(estimation_device)
-    else:
-        structure_data_for_build = structure_data.to(device)
+    logger.info(f"Using {len(X_train)} samples to build/estimate the circuit")
 
     symbolic_circuit = spn_learner.learn_spn(
-        structure_data_for_build,
+        X_train.to(device),
         input_layer="categorical",
         region_graph=args.rg,
         activation=args.activation,
@@ -588,7 +544,9 @@ if __name__ == "__main__":
     logger.info(f"Number of parameters: {sum(p.numel() for p in circuit.parameters())}")
 
     sum_params = [
-        p for layer in circuit.layers if not isinstance(layer, TorchInputLayer)
+        p
+        for layer in circuit.layers
+        if not isinstance(layer, TorchInputLayer)
         for p in layer.parameters()
     ]
 
@@ -616,10 +574,7 @@ if __name__ == "__main__":
         nll_fn=nll_fn,
     )
 
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    circuit.load_state_dict(torch.load(args.save_path, map_location=device))
+    circuit.load_state_dict(torch.load(args.save_path, map_location=device, weights_only=True))
 
     evaluate_circuit(
         circuit,
@@ -630,5 +585,9 @@ if __name__ == "__main__":
         log_to_wandb=args.wandb,
         nll_fn=nll_fn,
     )
-    if args.wandb:
+    if run is not None:
         run.finish()
+
+
+if __name__ == "__main__":
+    main()
