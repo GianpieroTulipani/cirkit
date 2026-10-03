@@ -7,6 +7,8 @@ from typing import Any, cast
 import torch
 from torch import Tensor
 
+from loguru import logger
+
 from cirkit.backend.compiler import (
     AbstractCompiler,
     CompilerInitializerRegistry,
@@ -513,9 +515,13 @@ def _fold_parameter_nodes_group(
         fold_idx_offset = 0
 
 
-        if compiler.state.has_compiled_parameter(in_folded_node):
+        try:
             sp = compiler.state.retrieve_symbolic_parameter(in_folded_node)
             in_folded_node, fold_idx_offset = compiler.state.retrieve_compiled_parameter(sp)
+        except KeyError:
+            # The target may already be a folded parameter.  Such parameters
+            # do not have a reverse symbolic mapping and need no remapping.
+            pass
 
         in_fold_idx: list[int] = [
             fold_idx_offset + i
