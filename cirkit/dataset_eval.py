@@ -406,7 +406,11 @@ def build_parser() -> argparse.ArgumentParser:
     add("--image-shape", type=int, nargs=3, metavar=("C", "H", "W"))
     add("--ycc", default="none", choices=["none", "lossy", "lossless"])
     add("--input-sharing", default="none", choices=["none", "full"])
-    add("--rg", default="quad-tree-2", choices=["quad-tree-2", "quad-tree-4", "quad-graph"])
+    add(
+        "--rg",
+        default="quad-tree-2",
+        choices=["quad-tree-2", "quad-tree-4", "quad-graph", "window-partition"],
+    )
     add("--inner-layer", default="cp", choices=["cp", "tucker"])
     add("--k", type=int, default=512)
     add(

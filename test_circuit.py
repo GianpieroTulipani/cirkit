@@ -1,11 +1,35 @@
+from pathlib import Path
+
 import torch
 from cirkit.templates.data_modalities import image_data
-from cirkit.templates.region_graph import QuadGraph
+from cirkit.templates.region_graph import QuadGraph, QuadTree, WindowPartitionGraph
+from cirkit.templates.region_graph.io import plot_region_graph
 from cirkit.pipeline import compile
 
 
-IMAGE_SHAPE = (1, 2, 2) 
+IMAGE_SHAPE = (1, 4, 4)
 SEED = 7
+
+
+def plot_region_graphs() -> None:
+    """Save the region graphs associated with ``IMAGE_SHAPE`` as SVG files."""
+    output_dir = Path(__file__).parent
+    region_graphs = {
+        "quad_graph.svg": QuadGraph(IMAGE_SHAPE),
+        "quad_tree_2.svg": QuadTree(IMAGE_SHAPE, num_patch_splits=2),
+        "window_partition_graph.svg": WindowPartitionGraph(IMAGE_SHAPE),
+    }
+
+    for filename, region_graph in region_graphs.items():
+        output_path = output_dir / filename
+        plot_region_graph(region_graph, out_path=output_path)
+        root = region_graph.outputs[0]
+        print(
+            f"Region graph saved to {output_path} "
+            f"({len(list(region_graph.region_nodes))} regions, "
+            f"{len(list(region_graph.partition_nodes))} partitions, "
+            f"{len(region_graph.region_inputs(root))} root partitions)"
+        )
 
 
 def main() -> None:
@@ -27,8 +51,8 @@ def main() -> None:
     symbolic_layers = list(symbolic_circuit.layers)
 
     compiled_circuit = compile(symbolic_circuit)
-    print(compiled_circuit)
 
 
 if __name__ == "__main__":
-    main()
+    plot_region_graphs()
+    # main()
