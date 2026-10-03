@@ -506,7 +506,7 @@ def main() -> None:
         data_format="image",
         image_shape=image_shape,
         device=device,
-        weight_dir=str(Path.cwd() / "best_categorical_miwae.pt"),
+        weight_dir=str(Path(__file__).with_name("best_categorical_miwae.pt")),
         adaptive_alpha=args.adaptive_alpha,
         input_sharing=args.input_sharing,
         num_categories=256,

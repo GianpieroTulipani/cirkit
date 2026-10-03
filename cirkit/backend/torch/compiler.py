@@ -7,8 +7,6 @@ from typing import Any, cast
 import torch
 from torch import Tensor
 
-from loguru import logger
-
 from cirkit.backend.compiler import (
     AbstractCompiler,
     CompilerInitializerRegistry,

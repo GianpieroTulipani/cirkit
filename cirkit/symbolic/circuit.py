@@ -1,5 +1,5 @@
 import itertools
-from collections import defaultdict, deque
+from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum, auto
@@ -7,13 +7,12 @@ from functools import cached_property
 from typing import Any
 
 from cirkit.symbolic.layers import InputLayer, Layer, ProductLayer, SumLayer
-from cirkit.templates.utils import Parameterization, parameterization_to_factory
 from cirkit.utils.algorithms import (
     DiAcyclicGraph,
     RootedDiAcyclicGraph,
     bfs,
     subgraph,
-    topological_ordering
+    topological_ordering,
 )
 from cirkit.utils.scope import Scope
 
@@ -268,47 +267,6 @@ class Circuit(DiAcyclicGraph[Layer]):
                     f"but found input layers {sl_ins}"
                 )
         self.scope = Scope.union(*tuple(self._scopes[sl] for sl in self.outputs))
-
-    
-    def compress(self):
-        on_the_path = set()
-        to_visit = deque(self.outputs)
-        while to_visit:
-            node = to_visit.popleft()
-
-            node_children = self.node_inputs(node)
-            if len(node_children) > 0 or isinstance(node, InputLayer):
-                on_the_path.add(node)
-                
-                if len(node_children) > 0:
-                    for node_child in node_children:
-                        if type(node) is type(node_child):
-                            node_child_descendants = [
-                                d for d in self.node_inputs(node_child) if d not in self._in_nodes[node]
-                            ]
-
-                            self._in_nodes[node].remove(node_child)
-                            self._in_nodes[node].extend(node_child_descendants)
-
-                    node.arity = len(self._in_nodes[node])
-                    if isinstance(node, SumLayer):
-                        new_shape = (node.num_output_units, node.num_input_units*node.arity)
-                        node.weight = parameterization_to_factory(
-                            Parameterization(activation="softmax", initialization="normal")
-                            )(new_shape)
-
-                    to_visit.extendleft([c for c in node_children if c])
-
-        self._nodes = list(on_the_path)
-
-        self._in_nodes = {
-            n: [i for i in n_inputs if i in self._nodes]
-            for n, n_inputs in self._in_nodes.items()
-            if n in self._nodes
-        }
-
-        super().__init__(self._nodes, self._in_nodes, self._outputs)
-
 
     @property
     def num_variables(self) -> int:
