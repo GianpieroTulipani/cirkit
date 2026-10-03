@@ -16,10 +16,7 @@ from cirkit.templates.region_graph import (
     RegionNode,
 )
 from cirkit.utils.scope import Scope
-from tests.templates.region_graph.test_utils import (
-    check_equivalent_region_graphs,
-    check_region_graph_save_load,
-)
+from tests.templates.region_graph.test_utils import check_region_graph_save_load
 
 
 @pytest.mark.parametrize(
