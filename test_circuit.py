@@ -2,7 +2,7 @@ from pathlib import Path
 
 import torch
 from cirkit.templates.data_modalities import image_data
-from cirkit.templates.region_graph import QuadGraph, QuadTree, WindowPartitionGraph
+from cirkit.templates.region_graph import QuadGraph, QuadTree
 from cirkit.templates.region_graph.io import plot_region_graph
 from cirkit.pipeline import compile
 
@@ -17,7 +17,6 @@ def plot_region_graphs() -> None:
     region_graphs = {
         "quad_graph.svg": QuadGraph(IMAGE_SHAPE),
         "quad_tree_2.svg": QuadTree(IMAGE_SHAPE, num_patch_splits=2),
-        "window_partition_graph.svg": WindowPartitionGraph(IMAGE_SHAPE),
     }
 
     for filename, region_graph in region_graphs.items():

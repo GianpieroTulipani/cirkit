@@ -5,7 +5,6 @@ from .algorithms import PoonDomingos as PoonDomingos
 from .algorithms import QuadGraph as QuadGraph
 from .algorithms import QuadTree as QuadTree
 from .algorithms import RandomBinaryTree as RandomBinaryTree
-from .algorithms import WindowPartitionGraph as WindowPartitionGraph
 from .graph import PartitionNode as PartitionNode
 from .graph import RegionGraph as RegionGraph
 from .graph import RegionGraphNode
