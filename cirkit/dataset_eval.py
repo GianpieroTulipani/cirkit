@@ -409,7 +409,7 @@ def build_parser() -> argparse.ArgumentParser:
     add(
         "--rg",
         default="quad-tree-2",
-        choices=["quad-tree-2", "quad-tree-4", "quad-graph", "window-partition"],
+        choices=["quad-tree-2", "quad-tree-4", "quad-graph"],
     )
     add("--inner-layer", default="cp", choices=["cp", "tucker"])
     add("--k", type=int, default=512)
