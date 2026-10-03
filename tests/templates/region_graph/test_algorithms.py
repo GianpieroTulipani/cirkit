@@ -1,4 +1,5 @@
 import itertools
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -14,9 +15,13 @@ from cirkit.templates.region_graph import (
     RandomBinaryTree,
     RegionGraph,
     RegionNode,
+    WindowPartitionGraph,
 )
 from cirkit.utils.scope import Scope
-from tests.templates.region_graph.test_utils import check_region_graph_save_load
+from tests.templates.region_graph.test_utils import (
+    check_equivalent_region_graphs,
+    check_region_graph_save_load,
+)
 
 
 @pytest.mark.parametrize(
@@ -129,6 +134,32 @@ def test_rg_algorithm_quad_graph(shape: tuple[int, int]):
     assert all(len(rg.region_inputs(rgn)) in [1, 2] for rgn in rg.inner_region_nodes)
     assert all(len(rg.partition_inputs(ptn)) in [2, 4] for ptn in rg.partition_nodes)
     check_region_graph_save_load(rg)
+
+
+def test_rg_algorithm_window_partition_graph(tmp_path: Path) -> None:
+    rg = WindowPartitionGraph((1, 4, 4))
+    (root,) = rg.outputs
+
+    assert root.scope == Scope(range(16))
+    assert len(rg.region_inputs(root)) == 8
+
+    regions = list(rg.region_nodes)
+    assert len({region.scope for region in regions}) == len(regions)
+
+    root_child_scopes = {
+        child.scope
+        for partition in rg.region_inputs(root)
+        for child in rg.partition_inputs(partition)
+    }
+    for top, left in itertools.product(range(3), repeat=2):
+        window_scope = Scope(
+            [row * 4 + column for row in range(top, top + 2) for column in range(left, left + 2)]
+        )
+        assert window_scope in root_child_scopes
+
+    output_path = tmp_path / "window_partition_graph.json"
+    rg.dump(str(output_path))
+    check_equivalent_region_graphs(rg, RegionGraph.load(str(output_path)))
 
 
 @pytest.mark.parametrize(

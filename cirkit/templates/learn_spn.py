@@ -29,7 +29,7 @@ from cirkit.templates.utils import (
     parameterization_to_factory,
     name_to_parameter_activation,
 )
-from cirkit.templates.region_graph.algorithms import QuadGraph, QuadTree
+from cirkit.templates.region_graph.algorithms import QuadGraph, QuadTree, WindowPartitionGraph
 from cirkit.utils.scope import Scope
 
 
@@ -194,6 +194,8 @@ class LearnSPN:
             rg = QuadTree(self.image_shape, num_patch_splits=2)
         elif region_graph == "quad-tree-4":
             rg = QuadTree(self.image_shape, num_patch_splits=4)
+        elif region_graph == "window-partition":
+            rg = WindowPartitionGraph(self.image_shape)
         else:
             raise ValueError(f"Unknown region graph called {region_graph}")
 
