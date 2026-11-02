@@ -1,11 +1,14 @@
+"""Construct symbolic circuits for images and tables, optionally initialized from data."""
+
 import functools
-from typing import Any, Mapping
+from typing import Any, Mapping, get_args
 
 import numpy as np
 from torch import Tensor
 
 from cirkit.symbolic.circuit import Circuit
 from cirkit.symbolic.parameters import ParameterFactory, mixing_weight_factory
+from cirkit.templates.initialization import DataDrivenInitialization, initialize_parameters
 from cirkit.templates.region_graph import (
     ChowLiuTree,
     LinearTree,
@@ -16,8 +19,10 @@ from cirkit.templates.region_graph import (
     RegionGraph,
 )
 from cirkit.templates.utils import (
+    CategoricalInputActivation,
     InputLayerFactory,
     Parameterization,
+    categorical_input_layer_factory,
     name_to_input_layer_factory,
     parameterization_to_factory,
 )
@@ -71,6 +76,9 @@ def image_data(  # pylint: disable=too-many-arguments
     data: Tensor | None = None,
     num_bins: int | None = None,
     mi_chunk_size: int | None = None,
+    initialization: DataDrivenInitialization | None = None,
+    input_sharing: str = "none",
+    input_activation: CategoricalInputActivation = "softmax",
 ) -> Circuit:
     """Constructs a symbolic circuit whose structure is tailored for image data sets.
 
@@ -112,8 +120,8 @@ def image_data(  # pylint: disable=too-many-arguments
             a matrix-vector product where the vector is the concatenation of input vectors.
             Sum layers having this semantics are also sometimes referred to as "mixing" layers.
             Defaults to True.
-        data: The data tensor from which the 'chow-liu-tree' region graph is learned. It is
-            required when region_graph is 'chow-liu-tree' and ignored otherwise. It can be of shape
+        data: Data for learning the 'chow-liu-tree' structure or initializing parameters.
+            Required for either operation and otherwise ignored. It can be of shape
             (num_samples, C, H, W) matching image_shape, flattened (num_samples, C * H * W),
             or (num_samples, H, W) for single-channel images (C == 1). When input_layer is
             'gaussian' it must be floating-point; otherwise it is treated as discrete
@@ -124,6 +132,26 @@ def image_data(  # pylint: disable=too-many-arguments
         mi_chunk_size: Only used by the 'chow-liu-tree' region graph. The number of samples
             per chunk passed to the chunked mutual-information estimators. If None, all samples
             are processed at once.
+        initialization: Optional settings for categorical initialization from data on the
+            selected structure. None preserves the usual random initialization. Requires
+            input_layer='categorical', data with integer values in [0, 255], and no input_params.
+            Uses data.device; num_bins affects only structure learning, not initialization.
+        input_sharing: 'none' for independent input parameters or 'full' for shared categorical
+            parameters. With multiple channels, full sharing uses a product of per-channel
+            categorical distributions at each pixel and requires a QuadGraph or QuadTree.
+            Parameters are shared across pixels, while channels have distinct distributions.
+            With initialization enabled, shared marginals pool all samples and pixels.
+        input_activation: 'softmax' keeps normalized categorical inputs by default.
+            'none' uses raw positive potentials through logits=log(potentials), with
+            positive uniform initialization unless estimates are requested. Requires
+            categorical inputs, no input_params, external positivity projection after
+            optimizer steps, and normalization by the circuit's partition function.
+
+    See:
+        Gala, de Campos, Vergari and Quaeghebeur, *Scaling Continuous Latent Variable
+        Models as Probabilistic Integral Circuits*, NeurIPS 2024, Appendix D.2:
+        https://arxiv.org/abs/2406.06494. The shared-input representation follows their
+        PC setup; empirical initialization is an independent option.
 
     Returns:
         Circuit: A symbolic circuit.
@@ -143,6 +171,7 @@ def image_data(  # pylint: disable=too-many-arguments
             "Expected the image shape to be a tuple of three positive integers,"
             f" but found {image_shape}"
         )
+
     if region_graph not in [
         "quad-tree-2",
         "quad-tree-4",
@@ -155,8 +184,30 @@ def image_data(  # pylint: disable=too-many-arguments
         raise ValueError(f"Unknown region graph called {region_graph}")
     if input_layer not in ["categorical", "binomial", "embedding", "gaussian"]:
         raise ValueError(f"Unknown input layer called {input_layer}")
+    if sum_product_layer not in ["cp", "cp-t", "tucker"]:
+        raise ValueError(f"Unknown sum-product layer called {sum_product_layer}")
+    if input_sharing not in ["none", "full"]:
+        raise ValueError(f"Unknown input sharing mode {input_sharing!r}")
+    if input_activation not in get_args(CategoricalInputActivation):
+        raise ValueError(f"Unknown categorical input activation {input_activation!r}")
+    if input_activation == "none" and (input_layer != "categorical" or input_params is not None):
+        raise ValueError("Raw positive inputs require categorical layers and no input_params")
+    if input_sharing == "full" and input_layer != "categorical":
+        raise ValueError("Full input sharing requires categorical inputs")
 
-    # Construct the image-tailored region graph
+    multichannel = input_sharing == "full" and image_shape[0] > 1
+    if multichannel and region_graph not in ("quad-graph", "quad-tree-2", "quad-tree-4"):
+        raise ValueError("Multichannel input sharing requires a QuadGraph or QuadTree")
+    estimation_data = None
+    if initialization is not None:
+        if input_layer != "categorical" or input_params is not None:
+            raise ValueError(
+                "Data-driven initialization requires categorical inputs without input_params"
+            )
+        if data is None:
+            raise ValueError("Data-driven initialization requires a data tensor")
+        estimation_data = _flatten_image_data(data, image_shape)
+
     match region_graph:
         case "quad-tree-2":
             rg = QuadTree(image_shape, num_patch_splits=2)
@@ -173,6 +224,19 @@ def image_data(  # pylint: disable=too-many-arguments
             if data is None:
                 raise ValueError("A data tensor is required when region_graph is 'chow-liu-tree'")
             flattened_data = _flatten_image_data(data, image_shape)
+            if initialization is not None:
+                if flattened_data.shape[0] == 0:
+                    raise ValueError("Expected non-empty categorical observations")
+                if flattened_data.is_complex() or not bool(flattened_data.isfinite().all()):
+                    raise ValueError("Categorical observations must be finite real integers")
+                if flattened_data.is_floating_point() and not bool(
+                    (flattened_data == flattened_data.round()).all()
+                ):
+                    raise ValueError("Categorical observations must be integer-valued")
+                # Promote uint8 before comparing with the upper bound 256.
+                values = flattened_data.long()
+                if bool(((values < 0) | (values >= 256)).any()):
+                    raise ValueError("Categorical image observations must be in [0, 256)")
             match input_layer:
                 case "gaussian":
                     if not flattened_data.is_floating_point():
@@ -243,7 +307,16 @@ def image_data(  # pylint: disable=too-many-arguments
             (name + "_factory", parameterization_to_factory(param))
             for name, param in input_params.items()
         )
-    input_factory = name_to_input_layer_factory(input_layer, **input_kwargs)
+    input_factory = (
+        categorical_input_layer_factory(
+            num_channels=image_shape[0] if multichannel else 1,
+            sharing="full" if input_sharing == "full" else "none",
+            activation=input_activation,
+            **input_kwargs,
+        )
+        if input_layer == "categorical"
+        else name_to_input_layer_factory(input_layer, **input_kwargs)
+    )
 
     # Set the sum weight factory
     if sum_weight_param is None:
@@ -260,7 +333,7 @@ def image_data(  # pylint: disable=too-many-arguments
         nary_sum_weight_factory = sum_weight_factory
 
     # Build and return the symbolic circuit
-    return rg.build_circuit(
+    circuit = rg.build_circuit(
         input_factory=input_factory,
         sum_product=sum_product_layer,
         sum_weight_factory=sum_weight_factory,
@@ -268,8 +341,19 @@ def image_data(  # pylint: disable=too-many-arguments
         num_input_units=num_input_units,
         num_sum_units=num_sum_units,
         num_classes=num_classes,
-        factorize_multivariate=True,
+        factorize_multivariate=not multichannel,
     )
+    if initialization is not None:
+        assert estimation_data is not None
+        initialize_parameters(
+            circuit,
+            estimation_data,
+            initialization=initialization,
+            sum_weight_param=sum_weight_param,
+            input_sharing="full" if input_sharing == "full" else "none",
+            input_activation=input_activation,
+        )
+    return circuit
 
 
 def tabular_data(
@@ -284,6 +368,9 @@ def tabular_data(
     num_classes: int = 1,
     sum_weight_param: Parameterization | None = None,
     use_mixing_weights: bool = True,
+    initialization: DataDrivenInitialization | None = None,
+    input_sharing: str = "none",
+    input_activation: CategoricalInputActivation = "softmax",
 ) -> Circuit:
     """
     Constructs a symbolic circuit whose structure is tailored for tabular data sets,
@@ -328,6 +415,22 @@ def tabular_data(
         use_mixing_weights:
             Whether to use “mixing” sum layers (i.e. learn a linear combination of child outputs)
             for nodes of arity >1.  If False, falls back to a matrix-vector product.
+        initialization:
+            Optional initialization from categorical observations on the selected structure.
+            Requires non-empty data and categorical input specifications containing only
+            num_categories. Each feature may have a different category count. Values must
+            be finite integers within the corresponding category range. None preserves
+            the usual initialization, including support for mixed input distributions.
+        input_sharing:
+            'none' for independent parameters or 'full' for a single shared categorical
+            parameter tensor. Full sharing requires identical input specifications and
+            assumes the features have the same domain. When initializing from data, it
+            pools observations across all features, unlike per-channel pooling for images.
+        input_activation:
+            'softmax' keeps the default input parameterization. 'none' uses positive
+            potentials through logits=log(potentials), initialized uniformly or from data.
+            Requires categorical specifications with num_categories only, external
+            positivity projection after optimizer steps and global normalization.
 
     Returns:
         Circuit
@@ -345,6 +448,37 @@ def tabular_data(
             - If `region_graph` is not one of the supported strings.
     """
 
+    if sum_product_layer not in ["cp", "cp-t", "tucker"]:
+        raise ValueError(f"Unknown sum-product layer called {sum_product_layer}")
+    if input_sharing not in ["none", "full"]:
+        raise ValueError(f"Unknown input sharing mode {input_sharing!r}")
+    if input_activation not in get_args(CategoricalInputActivation):
+        raise ValueError(f"Unknown categorical input activation {input_activation!r}")
+    specs = [input_layers] if isinstance(input_layers, dict) else input_layers
+    if not specs or any("name" not in spec or "args" not in spec for spec in specs):
+        raise ValueError("Expected input specifications with name and args")
+    if input_activation == "none" and any(
+        spec["name"] != "categorical" or set(spec["args"]) != {"num_categories"} for spec in specs
+    ):
+        raise ValueError("Raw positive inputs require categorical inputs with num_categories only")
+    if initialization is not None:
+        if data is None:
+            raise ValueError("Data-driven initialization requires a data tensor")
+        if any(
+            spec["name"] != "categorical" or set(spec["args"]) != {"num_categories"}
+            for spec in specs
+        ):
+            raise ValueError(
+                "Data-driven initialization requires categorical inputs with num_categories only"
+            )
+    if data is not None and (data.ndim != 2 or data.shape[0] == 0 or data.shape[1] == 0):
+        raise ValueError("Expected a non-empty data matrix of shape (num_samples, num_features)")
+    if data is not None and num_features is not None and data.shape[1] != num_features:
+        raise ValueError("num_features must match the number of data columns")
+    if input_sharing == "full":
+        if specs[0]["name"] != "categorical" or any(spec != specs[0] for spec in specs):
+            raise ValueError("Full sharing requires identical categorical input specifications")
+
     match region_graph:
         case "random-binary-tree":
             if num_features is None:
@@ -358,12 +492,32 @@ def tabular_data(
         case "chow-liu-tree":
             if data is None:
                 raise ValueError("You must pass `data=` if you ask for `chow-liu-tree`.")
+            if initialization is not None:
+                if data.is_complex() or not bool(data.isfinite().all()):
+                    raise ValueError("Categorical observations must be finite real integers")
+                if data.is_floating_point() and not bool((data == data.round()).all()):
+                    raise ValueError("Categorical observations must be integer-valued")
+                feature_specs = (
+                    [input_layers] * data.shape[1]
+                    if isinstance(input_layers, dict)
+                    else input_layers
+                )
+                if len(feature_specs) != data.shape[1]:
+                    raise ValueError("Number of input layers must match the number of features")
+                values = data.long()
+                for feature, spec in enumerate(feature_specs):
+                    num_categories = spec["args"]["num_categories"]
+                    column = values[:, feature]
+                    if bool(((column < 0) | (column >= num_categories)).any()):
+                        raise ValueError(
+                            f"Observations in feature {feature} must be in [0, {num_categories})"
+                        )
             rg_result = ChowLiuTree(
                 data=data,
                 input_type=(
                     input_layers["name"]
                     if isinstance(input_layers, dict)
-                    else [input_layers["name"] for input_layers in input_layers]
+                    else list[str](spec["name"] for spec in input_layers)
                 ),
                 num_categories=(
                     input_layers["args"]["num_categories"]
@@ -391,7 +545,26 @@ def tabular_data(
         nary_sum_weight_factory = sum_weight_factory
 
     input_factories: InputLayerFactory | Mapping[Scope, InputLayerFactory]
-    if isinstance(input_layers, dict):
+    if input_sharing == "full":
+        if isinstance(input_layers, list) and len(input_layers) != len(rg.scope):
+            raise ValueError("Number of input layers must match the number of features")
+        input_factories = categorical_input_layer_factory(
+            sharing="full", activation=input_activation, **specs[0]["args"]
+        )
+    elif input_activation == "none":
+        if isinstance(input_layers, list) and len(input_layers) != len(rg.scope):
+            raise ValueError("Number of input layers must match the number of features")
+        input_factories = (
+            categorical_input_layer_factory(activation=input_activation, **input_layers["args"])
+            if isinstance(input_layers, dict)
+            else {
+                Scope([i]): categorical_input_layer_factory(
+                    activation=input_activation, **spec["args"]
+                )
+                for i, spec in enumerate(input_layers)
+            }
+        )
+    elif isinstance(input_layers, dict):
         input_factories = name_to_input_layer_factory(input_layers["name"], **input_layers["args"])
     else:
         if len(input_layers) != len(rg.scope):
@@ -404,7 +577,7 @@ def tabular_data(
             for i, input_layer in enumerate(input_layers)
         }
 
-    return rg.build_circuit(
+    circuit = rg.build_circuit(
         input_factory=input_factories,
         sum_product=sum_product_layer,
         sum_weight_factory=sum_weight_factory,
@@ -414,3 +587,14 @@ def tabular_data(
         num_classes=num_classes,
         factorize_multivariate=True,
     )
+    if initialization is not None:
+        assert data is not None
+        initialize_parameters(
+            circuit,
+            data,
+            initialization=initialization,
+            sum_weight_param=sum_weight_param,
+            input_sharing="full" if input_sharing == "full" else "none",
+            input_activation=input_activation,
+        )
+    return circuit

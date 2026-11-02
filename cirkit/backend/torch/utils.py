@@ -5,12 +5,8 @@ from typing import Any, Callable, Final
 import torch
 from torch import Tensor, autograd
 
-# Floor per i valori in log-space: serve solo a impedire che log(0) = -inf si propaghi.
-# Il vecchio valore -708.396 (= log del più piccolo float64 normale) troncava le
-# log-verosimiglianze reali ad alta dimensionalità (es. MNIST 784 pixel ~ -4500 nats):
-# i layer prodotto accumulavano il log oltre -708 e venivano clampati, rendendo l'output
-# costante e il gradiente nullo. finfo(float32).min (~-3.4e38) protegge da -inf senza
-# tagliare valori legittimi.
+# Keep log-space products finite without clipping valid high-dimensional log-likelihoods.
+# A floor based on log(finfo.tiny) would incorrectly saturate sums of many log factors.
 LOG_CLAMP_MIN: Final = float(torch.finfo(torch.float32).min)
 
 

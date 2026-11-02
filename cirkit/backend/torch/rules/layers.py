@@ -74,6 +74,7 @@ def compile_categorical_layer(
 def compile_multichannel_categorical_layer(
     compiler: "TorchCompiler", sl: MultichannelCategoricalLayer
 ) -> TorchMultichannelCategoricalLayer:
+    """Compile a multichannel categorical input, preserving sorted channel order."""
     if sl.logits is None:
         assert sl.probs is not None
         probs = compiler.compile_parameter(sl.probs)
@@ -83,7 +84,7 @@ def compile_multichannel_categorical_layer(
         logits = compiler.compile_parameter(sl.logits)
         probs = None
     return TorchMultichannelCategoricalLayer(
-        torch.tensor(tuple(sl.scope)),
+        torch.tensor(sorted(sl.scope)),
         sl.num_output_units,
         num_channels=sl.num_channels,
         num_categories=sl.num_categories,

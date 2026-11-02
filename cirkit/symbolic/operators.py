@@ -23,6 +23,7 @@ from cirkit.symbolic.parameters import (
     GaussianProductLogPartition,
     GaussianProductMean,
     GaussianProductStddev,
+    IndexParameter,
     KroneckerParameter,
     LogParameter,
     OuterProductParameter,
@@ -67,19 +68,59 @@ def integrate_categorical_layer(sl: CategoricalLayer, *, scope: Scope) -> Circui
 def integrate_multichannel_categorical_layer(
     sl: MultichannelCategoricalLayer, *, scope: Scope
 ) -> CircuitBlock:
+    """Integrate selected channels, retaining the factors for unobserved channels.
+
+    Args:
+        sl: The categorical product layer to integrate.
+        scope: Variables to integrate out; at least one must belong to the layer.
+
+    Returns:
+        A block representing the marginal over the remaining channels.
+
+    Raises:
+        ValueError: If the layer and integration scopes are disjoint.
+    """
     if not len(sl.scope & scope):
         raise ValueError(
             f"The scope of the MultichannelCategorical layer '{sl.scope}'"
             f" is expected to be a subset of the integration scope '{scope}'"
         )
+    remaining_scope = sl.scope - scope
+    remaining_layer = None
+    if remaining_scope:
+        remaining_indices = [i for i, var in enumerate(sorted(sl.scope)) if var not in scope]
+        source = sl.probs if sl.logits is None else sl.logits
+        assert source is not None
+        remaining = Parameter.from_unary(
+            IndexParameter(source.shape, indices=remaining_indices, axis=1), source.ref()
+        )
+        remaining_layer = MultichannelCategoricalLayer(
+            remaining_scope,
+            sl.num_output_units,
+            num_channels=len(remaining_scope),
+            num_categories=sl.num_categories,
+            probs=remaining if sl.logits is None else None,
+            logits=remaining if sl.logits is not None else None,
+        )
+        if sl.logits is None:
+            return CircuitBlock.from_layer(remaining_layer)
     if sl.logits is None:
         log_partition = Parameter.from_input(ConstantParameter(sl.num_output_units, value=0.0))
     else:
-        reduce_lse = ReduceLSEParameter(sl.logits.shape, axis=2)
-        channel_partitions = Parameter.from_unary(reduce_lse, sl.logits.ref())
+        integrated_indices = [i for i, var in enumerate(sorted(sl.scope)) if var in scope]
+        integrated = Parameter.from_unary(
+            IndexParameter(sl.logits.shape, indices=integrated_indices, axis=1), sl.logits.ref()
+        )
+        reduce_lse = ReduceLSEParameter(integrated.shape, axis=2)
+        channel_partitions = Parameter.from_unary(reduce_lse, integrated)
         reduce_sum = ReduceSumParameter(channel_partitions.shape, axis=1)
         log_partition = Parameter.from_unary(reduce_sum, channel_partitions)
     int_sl = ConstantValueLayer(sl.num_output_units, log_space=True, value=log_partition)
+    if remaining_layer is not None:
+        product = HadamardLayer(sl.num_output_units, arity=2)
+        return CircuitBlock(
+            [remaining_layer, int_sl, product], {product: [remaining_layer, int_sl]}, product
+        )
     return CircuitBlock.from_layer(int_sl)
 
 
@@ -324,6 +365,7 @@ def conjugate_categorical_layer(sl: CategoricalLayer) -> CircuitBlock:
 
 
 def conjugate_multichannel_categorical_layer(sl: MultichannelCategoricalLayer) -> CircuitBlock:
+    """Return the conjugate of a real categorical product, sharing its parameters."""
     logits = sl.logits.ref() if sl.logits is not None else None
     probs = sl.probs.ref() if sl.probs is not None else None
     sl = MultichannelCategoricalLayer(

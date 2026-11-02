@@ -59,3 +59,12 @@ def test_semiring_complex_lse_sum_semiring() -> None:
     assert torch.all(torch.isfinite(y2.real))
     assert torch.all(torch.isfinite(y2.imag))
     assert allclose(y1, y2.real)
+
+
+def test_log_products_preserve_small_likelihoods_and_gradients() -> None:
+    with torch.enable_grad():
+        scores = torch.tensor([-1000.0, -2000.0], requires_grad=True)
+        result = LSESumSemiring.prod(scores, dim=0, keepdim=False)
+        torch.testing.assert_close(result, torch.tensor(-3000.0))
+        result.backward()
+        torch.testing.assert_close(scores.grad, torch.ones(2))

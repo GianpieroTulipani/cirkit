@@ -1,3 +1,5 @@
+"""Train image circuits through the modality API: python -m scripts.evaluate_image_circuit."""
+
 import argparse
 import logging
 from pathlib import Path
@@ -11,8 +13,9 @@ from tqdm.auto import tqdm
 import cirkit.symbolic.functional as sf
 from cirkit.backend.torch.layers import TorchInputLayer
 from cirkit.pipeline import PipelineContext
-from cirkit.templates.learn_spn import LearnSPN
-
+from cirkit.templates.data_modalities import image_data
+from cirkit.templates.initialization import DataDrivenInitialization
+from cirkit.templates.utils import POSITIVE_PARAMETER_MIN, Parameterization
 
 logger = logging.getLogger(__name__)
 
@@ -252,9 +255,19 @@ def train_circuit(
     activation=None,
     use_scheduler=False,
     nll_fn=None,
+    input_params=(),
+    input_activation="softmax",
 ):
     if nll_fn is None:
         nll_fn = make_nll_function(circuit, partition_function)
+    clamp_params = list(sum_params) if activation == "clamp" else []
+    if input_activation == "clamp":
+        clamp_params.extend(input_params)
+    # Shared inputs can appear in several layers: project each raw tensor only once.
+    clamp_params = list({id(p): p for p in clamp_params}.values())
+    with torch.no_grad():
+        for p in clamp_params:
+            p.clamp_(min=POSITIVE_PARAMETER_MIN)
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = (
         optim.lr_scheduler.CosineAnnealingWarmRestarts(
@@ -294,10 +307,10 @@ def train_circuit(
             if scheduler is not None:
                 scheduler.step()
 
-            if activation == "clamp":
+            if clamp_params:
                 with torch.no_grad():
-                    for p in sum_params:
-                        p.data.clamp_(min=float(np.sqrt(np.finfo(np.float32).tiny)))
+                    for p in clamp_params:
+                        p.clamp_(min=POSITIVE_PARAMETER_MIN)
 
             total_steps += 1
 
@@ -416,6 +429,12 @@ def build_parser() -> argparse.ArgumentParser:
     add(
         "--activation", default="clamp", choices=["clamp", "softmax", "softplus", "sigmoid", "none"]
     )
+    add(
+        "--input-activation",
+        default="softmax",
+        choices=["softmax", "clamp"],
+        help="Softmax inputs or raw positive input potentials projected after optimizer steps",
+    )
     add("--weights-init", default="uniform", choices=["uniform", "normal", "dirichlet"])
 
     # Training
@@ -434,12 +453,10 @@ def build_parser() -> argparse.ArgumentParser:
     # Initialization
     add("--alpha", type=float, default=5.0)
     add("--noise-scale", type=float, default=2.0)
-    add("--adaptive-alpha", action="store_true")
     add("--use-mixing-weights", action="store_true")
     add("--use-estimated-weights", action="store_true")
 
     # Optional features
-    add("--use-miwae", action="store_true")
     add("--torch-compile", action="store_true")
     add("--compile-backend", default="inductor", choices=["inductor", "eager", "aot_eager"])
     add(
@@ -493,37 +510,34 @@ def main() -> None:
     val_loader = DataLoader(TensorDataset(X_val), batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(TensorDataset(X_test), batch_size=args.batch_size, shuffle=False)
 
-    if args.use_miwae and image_shape[0] != 1:
-        raise ValueError(
-            "MIWAE support in this script is currently limited to single-channel images"
-        )
-
-    logger.info("Using LearnSPN")
-    spn_learner = LearnSPN(
-        alpha=args.alpha,
-        noise_scale=args.noise_scale,
-        use_miwae=args.use_miwae,
-        data_format="image",
-        image_shape=image_shape,
-        device=device,
-        weight_dir=str(Path(__file__).with_name("best_categorical_miwae.pt")),
-        adaptive_alpha=args.adaptive_alpha,
-        input_sharing=args.input_sharing,
-        num_categories=256,
-    )
     logger.info(f"Using {len(X_train)} samples to build/estimate the circuit")
-
-    symbolic_circuit = spn_learner.learn_spn(
-        X_train.to(device),
+    initialization = (
+        DataDrivenInitialization(
+            alpha=args.alpha,
+            noise_scale=args.noise_scale,
+            seed=args.seed,
+        )
+        if args.use_estimated_weights
+        else None
+    )
+    # The legacy CLI's 'clamp' mode projects raw weights after each optimizer step.
+    sum_weight_param = Parameterization(
+        activation="none" if args.activation == "clamp" else args.activation,
+        initialization="uniform" if args.activation == "clamp" else args.weights_init,
+    )
+    symbolic_circuit = image_data(
+        image_shape,
+        data=X_train.to(device),
         input_layer="categorical",
         region_graph=args.rg,
-        activation=args.activation,
-        weights_init=args.weights_init,
+        sum_weight_param=sum_weight_param,
         sum_product_layer=args.inner_layer,
         num_input_units=args.k,
         num_sum_units=args.k,
         use_mixing_weights=args.use_mixing_weights,
-        use_estimated_weights=args.use_estimated_weights,
+        initialization=initialization,
+        input_sharing=args.input_sharing,
+        input_activation="none" if args.input_activation == "clamp" else "softmax",
     )
 
     symbolic_partition_function = sf.integrate(symbolic_circuit)
@@ -553,6 +567,12 @@ def main() -> None:
         if not isinstance(layer, TorchInputLayer)
         for p in layer.parameters()
     ]
+    input_params = [
+        p
+        for layer in circuit.layers
+        if isinstance(layer, TorchInputLayer)
+        for p in layer.parameters()
+    ]
 
     num_dimensions = int(np.prod(image_shape))
     train_circuit(
@@ -574,6 +594,8 @@ def main() -> None:
         save_path=args.save_path,
         log_to_wandb=args.wandb,
         activation=args.activation,
+        input_activation=args.input_activation,
+        input_params=input_params,
         use_scheduler=args.use_scheduler,
         nll_fn=nll_fn,
     )

@@ -1,5 +1,6 @@
 import tempfile
 from collections import defaultdict
+from pathlib import Path
 
 from cirkit.templates.region_graph import RegionGraph
 
@@ -33,8 +34,9 @@ def check_equivalent_region_graphs(rg1: RegionGraph, rg2: RegionGraph) -> None:
 
 
 def check_region_graph_save_load(rg: RegionGraph) -> None:
-    with tempfile.NamedTemporaryFile("r+") as f:
-        rg.dump(f.name)
-        f.seek(0)
-        loaded_rg = RegionGraph.load(f.name)
+    # Windows does not allow reopening a NamedTemporaryFile while its handle is open.
+    with tempfile.TemporaryDirectory() as directory:
+        filename = str(Path(directory) / "region-graph.json")
+        rg.dump(filename)
+        loaded_rg = RegionGraph.load(filename)
         check_equivalent_region_graphs(rg, loaded_rg)

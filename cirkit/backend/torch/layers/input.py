@@ -454,8 +454,8 @@ class TorchCategoricalLayer(TorchExpFamilyLayer):
         return {"logits": self.logits}
 
     def log_unnormalized_likelihood(self, x: Tensor) -> Tensor:
-        if x.is_floating_point():
-            x = x.long()  # The input to Categorical should be discrete
+        # Integer indices also prevent uint8 image values from acting as masks.
+        x = x.long()
         # x: (F, B, 1) -> (F, B)
         x = x.squeeze(dim=2)
         # logits: (F, K, N)
@@ -512,7 +512,11 @@ class TorchCategoricalLayer(TorchExpFamilyLayer):
 
 
 class TorchMultichannelCategoricalLayer(TorchExpFamilyLayer):
-    """A Categorical layer for multichannel discrete variables."""
+    """Torch implementation of a product of per-channel categorical distributions.
+
+    Channels follow scope_idx order; parameter tensors have shape (F, K, C, N).
+    See the symbolic MultichannelCategoricalLayer for the model and paper reference.
+    """
 
     # pylint: disable-next=too-many-arguments
     def __init__(
@@ -526,6 +530,20 @@ class TorchMultichannelCategoricalLayer(TorchExpFamilyLayer):
         logits: TorchParameter | None = None,
         semiring: Semiring | None = None,
     ) -> None:
+        """Initialize a folded categorical product layer.
+
+        Args:
+            scope_idx: Variable indices of shape (F, C), or (C,) before folding.
+            num_output_units: Number of units K per fold.
+            num_channels: Number of independent channels C per unit.
+            num_categories: Number of categories N per channel, at least two.
+            probs: Normalized per-channel probabilities, or None when using logits.
+            logits: Unnormalized per-channel log-potentials, or None when using probs.
+            semiring: Semiring used for computation.
+
+        Raises:
+            ValueError: If scope, dimensions or parameter shapes are inconsistent.
+        """
         num_variables = scope_idx.shape[-1]
         if num_variables != num_channels:
             raise ValueError(
@@ -534,9 +552,9 @@ class TorchMultichannelCategoricalLayer(TorchExpFamilyLayer):
             )
         if num_channels <= 0:
             raise ValueError("The number of channels must be positive")
-        if num_categories <= 0:
+        if num_categories < 2:
             raise ValueError(
-                "The number of categories for Categorical distribution must be positive"
+                "The number of categories for Categorical distribution must be at least two"
             )
         super().__init__(
             scope_idx,
@@ -589,8 +607,7 @@ class TorchMultichannelCategoricalLayer(TorchExpFamilyLayer):
         return {"logits": self.logits}
 
     def log_unnormalized_likelihood(self, x: Tensor) -> Tensor:
-        if x.is_floating_point():
-            x = x.long()
+        x = x.long()
         if x.shape[-1] != self.num_channels:
             raise ValueError(
                 f"Expected input with {self.num_channels} channels, found {x.shape[-1]}"
@@ -601,9 +618,8 @@ class TorchMultichannelCategoricalLayer(TorchExpFamilyLayer):
         else:
             logits = self.logits()
         idx_fold = torch.arange(self.num_folds, device=logits.device)
-        values = x.clamp(0, self.num_categories - 1)
         channel_outputs = [
-            logits[idx_fold[:, None], :, c, values[:, :, c]] for c in range(self.num_channels)
+            logits[idx_fold[:, None], :, c, x[:, :, c]] for c in range(self.num_channels)
         ]
         return torch.stack(channel_outputs, dim=0).sum(dim=0)
 

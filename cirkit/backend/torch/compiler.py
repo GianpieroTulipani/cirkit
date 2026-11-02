@@ -78,6 +78,9 @@ class TorchCompilerState:
         # Retrieve whether a tensor parameter has already been compiled
         return p in self._compiled_parameters
 
+    def has_symbolic_parameter(self, p: TorchTensorParameter) -> bool:
+        return p in self._symbolic_parameters
+
     def retrieve_compiled_parameter(self, p: TensorParameter) -> tuple[TorchTensorParameter, int]:
         # Retrieve the compiled parameter: we return the fold index as well.
         return self._compiled_parameters[p]
@@ -512,14 +515,11 @@ def _fold_parameter_nodes_group(
         in_folded_node = node_pointer.deref()
         fold_idx_offset = 0
 
-
-        try:
+        if compiler.state.has_symbolic_parameter(in_folded_node):
             sp = compiler.state.retrieve_symbolic_parameter(in_folded_node)
-            in_folded_node, fold_idx_offset = compiler.state.retrieve_compiled_parameter(sp)
-        except KeyError:
-            # The target may already be a folded parameter.  Such parameters
-            # do not have a reverse symbolic mapping and need no remapping.
-            pass
+            in_folded_node, fold_idx_offset = (
+                compiler.state.retrieve_compiled_parameter(sp)
+            )
 
         in_fold_idx: list[int] = [
             fold_idx_offset + i

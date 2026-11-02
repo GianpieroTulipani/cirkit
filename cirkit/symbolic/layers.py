@@ -356,11 +356,16 @@ class CategoricalLayer(InputLayer):
 
 
 class MultichannelCategoricalLayer(InputLayer):
-    """A categorical input layer for variables with multiple discrete channels.
+    """A product of categorical distributions, one for each channel of a variable group.
 
-    The parameter tensor has shape ``(K, C, N)``, equivalently ``K x (C * N)``, where
-    ``K`` is the number of output units, ``C`` is the number of channels, and ``N`` is
-    the number of categories per channel.
+    Parameters have shape (K, C, N): units, channels, categories. Channels follow
+    sorted variable IDs in the scope and are independent conditional on the unit.
+    This is not a categorical distribution over N**C joint assignments.
+
+    See:
+        Gala, de Campos, Vergari and Quaeghebeur, *Scaling Continuous Latent Variable
+        Models as Probabilistic Integral Circuits*, NeurIPS 2024, Appendix D.2,
+        https://arxiv.org/abs/2406.06494, for the RGB input representation and sharing.
     """
 
     def __init__(
@@ -374,7 +379,23 @@ class MultichannelCategoricalLayer(InputLayer):
         probs: Parameter | None = None,
         logits_factory: ParameterFactory | None = None,
         probs_factory: ParameterFactory | None = None,
-    ):
+    ) -> None:
+        """Initialize a multichannel categorical layer.
+
+        Args:
+            scope: Variable IDs, one per channel, interpreted in sorted order.
+            num_output_units: Number of product distributions represented by the layer.
+            num_channels: Number of channels, equal to the scope size and at least one.
+            num_categories: Number of states per channel, at least two.
+            logits: Optional unnormalized log-potentials of shape (K, C, N).
+            probs: Optional normalized per-channel probabilities of shape (K, C, N).
+            logits_factory: Constructs logits when neither explicit parameter is given.
+            probs_factory: Constructs probabilities when neither explicit parameter is given.
+                Without factories, uses a softmax over categories and normal initialization.
+
+        Raises:
+            ValueError: If dimensions, parameter shapes, or parameter/factory choices conflict.
+        """
         if len(scope) != num_channels:
             raise ValueError(
                 f"The MultichannelCategorical layer expects {num_channels} variables, "
