@@ -141,11 +141,11 @@ def image_data(  # pylint: disable=too-many-arguments
             categorical distributions at each pixel and requires a QuadGraph or QuadTree.
             Parameters are shared across pixels, while channels have distinct distributions.
             With initialization enabled, shared marginals pool all samples and pixels.
-        input_activation: 'softmax' keeps normalized categorical inputs by default.
-            'none' uses raw positive potentials through logits=log(potentials), with
-            positive uniform initialization unless estimates are requested. Requires
-            categorical inputs, no input_params, external positivity projection after
-            optimizer steps, and normalization by the circuit's partition function.
+        input_activation: Activation applied to categorical input potentials. 'softmax'
+            produces normalized inputs. 'none' uses raw potentials and requires external
+            positivity projection after optimizer steps. 'softplus', 'sigmoid' and
+            'positive-clamp' enforce positivity inside the parameter graph. Non-softmax
+            inputs require global normalization and cannot be combined with input_params.
 
     See:
         Gala, de Campos, Vergari and Quaeghebeur, *Scaling Continuous Latent Variable
@@ -190,8 +190,8 @@ def image_data(  # pylint: disable=too-many-arguments
         raise ValueError(f"Unknown input sharing mode {input_sharing!r}")
     if input_activation not in get_args(CategoricalInputActivation):
         raise ValueError(f"Unknown categorical input activation {input_activation!r}")
-    if input_activation == "none" and (input_layer != "categorical" or input_params is not None):
-        raise ValueError("Raw positive inputs require categorical layers and no input_params")
+    if input_activation != "softmax" and (input_layer != "categorical" or input_params is not None):
+        raise ValueError("Non-softmax inputs require categorical layers and no input_params")
     if input_sharing == "full" and input_layer != "categorical":
         raise ValueError("Full input sharing requires categorical inputs")
 
@@ -427,10 +427,10 @@ def tabular_data(
             assumes the features have the same domain. When initializing from data, it
             pools observations across all features, unlike per-channel pooling for images.
         input_activation:
-            'softmax' keeps the default input parameterization. 'none' uses positive
-            potentials through logits=log(potentials), initialized uniformly or from data.
-            Requires categorical specifications with num_categories only, external
-            positivity projection after optimizer steps and global normalization.
+            Activation applied to categorical input potentials. 'softmax' produces normalized
+            inputs. 'none' requires external positivity projection; 'softplus', 'sigmoid' and
+            'positive-clamp' enforce positivity inside the parameter graph. Non-softmax inputs
+            require categorical specifications with num_categories only and global normalization.
 
     Returns:
         Circuit
@@ -457,10 +457,10 @@ def tabular_data(
     specs = [input_layers] if isinstance(input_layers, dict) else input_layers
     if not specs or any("name" not in spec or "args" not in spec for spec in specs):
         raise ValueError("Expected input specifications with name and args")
-    if input_activation == "none" and any(
+    if input_activation != "softmax" and any(
         spec["name"] != "categorical" or set(spec["args"]) != {"num_categories"} for spec in specs
     ):
-        raise ValueError("Raw positive inputs require categorical inputs with num_categories only")
+        raise ValueError("Non-softmax inputs require categorical inputs with num_categories only")
     if initialization is not None:
         if data is None:
             raise ValueError("Data-driven initialization requires a data tensor")
@@ -551,7 +551,7 @@ def tabular_data(
         input_factories = categorical_input_layer_factory(
             sharing="full", activation=input_activation, **specs[0]["args"]
         )
-    elif input_activation == "none":
+    elif input_activation != "softmax":
         if isinstance(input_layers, list) and len(input_layers) != len(rg.scope):
             raise ValueError("Number of input layers must match the number of features")
         input_factories = (

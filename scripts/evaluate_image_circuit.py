@@ -11,7 +11,6 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
 import cirkit.symbolic.functional as sf
-from cirkit.backend.torch.layers import TorchInputLayer
 from cirkit.pipeline import PipelineContext
 from cirkit.templates.data_modalities import image_data
 from cirkit.templates.initialization import DataDrivenInitialization
@@ -239,7 +238,6 @@ def train_circuit(
     partition_function,
     train_loader,
     val_loader,
-    sum_params,
     max_train_steps,
     lr,
     T_0,
@@ -252,21 +250,21 @@ def train_circuit(
     patience,
     num_dimensions,
     log_to_wandb=True,
-    activation=None,
+    activation="none",
     use_scheduler=False,
     nll_fn=None,
-    input_params=(),
-    input_activation="softmax",
 ):
     if nll_fn is None:
         nll_fn = make_nll_function(circuit, partition_function)
-    clamp_params = list(sum_params) if activation == "clamp" else []
-    if input_activation == "clamp":
-        clamp_params.extend(input_params)
-    # Shared inputs can appear in several layers: project each raw tensor only once.
-    clamp_params = list({id(p): p for p in clamp_params}.values())
+    # activation='none' means there is no local activation in any parameter graph.
+    # Keep every raw parameter in the circuit positive with a single global projection.
+    # The CLI's activation='clamp' is different: it maps to Cirkit's local
+    # positive-clamp activation and therefore requires no optimizer-side projection.
+    globally_projected_params = (
+        list({id(p): p for p in circuit.parameters()}.values()) if activation == "none" else []
+    )
     with torch.no_grad():
-        for p in clamp_params:
+        for p in globally_projected_params:
             p.clamp_(min=POSITIVE_PARAMETER_MIN)
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = (
@@ -307,9 +305,9 @@ def train_circuit(
             if scheduler is not None:
                 scheduler.step()
 
-            if clamp_params:
+            if globally_projected_params:
                 with torch.no_grad():
-                    for p in clamp_params:
+                    for p in globally_projected_params:
                         p.clamp_(min=POSITIVE_PARAMETER_MIN)
 
             total_steps += 1
@@ -427,13 +425,14 @@ def build_parser() -> argparse.ArgumentParser:
     add("--inner-layer", default="cp", choices=["cp", "tucker"])
     add("--k", type=int, default=512)
     add(
-        "--activation", default="clamp", choices=["clamp", "softmax", "softplus", "sigmoid", "none"]
-    )
-    add(
-        "--input-activation",
-        default="softmax",
-        choices=["softmax", "clamp"],
-        help="Softmax inputs or raw positive input potentials projected after optimizer steps",
+        "--activation",
+        default="none",
+        choices=["none", "clamp", "softmax", "softplus", "sigmoid"],
+        help=(
+            "One activation for all input and sum units. 'none' uses raw parameters with a "
+            "global positive projection before training and after optimizer steps; 'clamp' "
+            "uses Cirkit's local positive-clamp parameter activation."
+        ),
     )
     add("--weights-init", default="uniform", choices=["uniform", "normal", "dirichlet"])
 
@@ -520,10 +519,10 @@ def main() -> None:
         if args.use_estimated_weights
         else None
     )
-    # The legacy CLI's 'clamp' mode projects raw weights after each optimizer step.
+    parameter_activation = "positive-clamp" if args.activation == "clamp" else args.activation
     sum_weight_param = Parameterization(
-        activation="none" if args.activation == "clamp" else args.activation,
-        initialization="uniform" if args.activation == "clamp" else args.weights_init,
+        activation=parameter_activation,
+        initialization=args.weights_init,
     )
     symbolic_circuit = image_data(
         image_shape,
@@ -537,7 +536,7 @@ def main() -> None:
         use_mixing_weights=args.use_mixing_weights,
         initialization=initialization,
         input_sharing=args.input_sharing,
-        input_activation="none" if args.input_activation == "clamp" else "softmax",
+        input_activation=parameter_activation,
     )
 
     symbolic_partition_function = sf.integrate(symbolic_circuit)
@@ -561,26 +560,12 @@ def main() -> None:
 
     logger.info(f"Number of parameters: {sum(p.numel() for p in circuit.parameters())}")
 
-    sum_params = [
-        p
-        for layer in circuit.layers
-        if not isinstance(layer, TorchInputLayer)
-        for p in layer.parameters()
-    ]
-    input_params = [
-        p
-        for layer in circuit.layers
-        if isinstance(layer, TorchInputLayer)
-        for p in layer.parameters()
-    ]
-
     num_dimensions = int(np.prod(image_shape))
     train_circuit(
         circuit,
         circuit_partition_function,
         train_loader,
         val_loader,
-        sum_params=sum_params,
         max_train_steps=max_train_steps,
         lr=args.lr,
         T_0=args.T_0,
@@ -594,8 +579,6 @@ def main() -> None:
         save_path=args.save_path,
         log_to_wandb=args.wandb,
         activation=args.activation,
-        input_activation=args.input_activation,
-        input_params=input_params,
         use_scheduler=args.use_scheduler,
         nll_fn=nll_fn,
     )

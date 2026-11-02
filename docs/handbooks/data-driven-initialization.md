@@ -184,9 +184,20 @@ inputs. Softmax-parameterized sum weights are locally normalized as well. If eve
 and input uses a normalized parameterization, a smooth and decomposable circuit with a
 single normalized output represents a normalized distribution.
 
-With `input_activation="none"`, each input stores a learnable positive potential $a$
-and exposes $\log a$ as its categorical logits. The input mass is then data-dependent
-and is included by symbolic integration. The normalized log-likelihood is
+The experiment runner uses one activation for every input and sum unit; it does not mix
+different input and inner-unit activations. The two positive raw-weight modes have
+different meanings:
+
+- `--activation none` adds no activation to the parameter graphs. Every underlying
+  parameter tensor in the compiled circuit is therefore projected to
+  `POSITIVE_PARAMETER_MIN` before the first forward pass and after each optimizer step.
+- `--activation clamp` maps to Cirkit's `positive-clamp`. The clamp belongs to each
+  symbolic parameter graph, so no optimizer-side global projection is performed.
+
+With `none`, each input stores a learnable positive potential $a$ and exposes $\log a$
+as its categorical logits. `positive-clamp`, `softplus`, and `sigmoid` similarly expose
+the logarithm of their locally positive output. In all these cases the input mass is
+data-dependent and is included by symbolic integration. The normalized log-likelihood is
 
 $$
 \log p_\theta(\mathbf{x})
@@ -195,12 +206,10 @@ $$
 Z_\theta = \sum_{\mathbf{x}} s_\theta(\mathbf{x}).
 $$
 
-Raw potentials must remain positive during optimization. Project their underlying
-tensors after each optimizer step. A normalized likelihood also requires the current
-partition function, obtained from a symbolically integrated circuit.
-
-If only some parameter groups are raw, project only those groups. Softmax logits are
-unconstrained and may legitimately be negative.
+Only the `none` mode needs the global projection during optimization. A normalized
+likelihood also requires the current partition function, obtained from a symbolically
+integrated circuit. Softmax logits and the preactivations of local `positive-clamp`,
+`softplus`, and `sigmoid` operations are unconstrained and may legitimately be negative.
 
 ## Configuration and practical walkthrough
 

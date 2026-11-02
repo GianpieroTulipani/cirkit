@@ -1,27 +1,23 @@
-"""Check that projected training clamps raw weights without changing softmax logits."""
-
-import itertools
+"""Check global raw-parameter projection and local parameter activations."""
 
 import pytest
 import torch
 
-from cirkit.backend.torch.layers import TorchInputLayer
 from cirkit.pipeline import PipelineContext
 from cirkit.symbolic import functional
 from cirkit.templates.data_modalities import image_data
 from cirkit.templates.initialization import DataDrivenInitialization
 from cirkit.templates.utils import POSITIVE_PARAMETER_MIN, Parameterization
-from scripts.evaluate_image_circuit import make_nll_function, train_circuit
+from scripts.evaluate_image_circuit import build_parser, make_nll_function, train_circuit
 
 
-@pytest.mark.parametrize(
-    "sum_activation,input_activation", list(itertools.product(["softmax", "clamp"], repeat=2))
-)
+@pytest.mark.parametrize("activation", ["none", "clamp", "softmax", "softplus", "sigmoid"])
 @pytest.mark.parametrize("estimated", [False, True])
-def test_training_projects_only_raw_parameters(
-    sum_activation, input_activation, estimated, monkeypatch, tmp_path
+def test_training_projects_all_parameters_only_for_none(
+    activation, estimated, monkeypatch, tmp_path
 ):
     data = torch.tensor([[0, 0, 1, 1, 0, 1], [1, 0, 0, 1, 1, 0]])
+    parameter_activation = "positive-clamp" if activation == "clamp" else activation
     symbolic = image_data(
         (3, 1, 2),
         input_layer="categorical",
@@ -30,9 +26,9 @@ def test_training_projects_only_raw_parameters(
         sum_product_layer="cp",
         input_sharing="full",
         data=data,
-        input_activation="none" if input_activation == "clamp" else "softmax",
+        input_activation=parameter_activation,
         sum_weight_param=Parameterization(
-            activation="none" if sum_activation == "clamp" else "softmax",
+            activation=parameter_activation,
             initialization="uniform",
         ),
         initialization=DataDrivenInitialization() if estimated else None,
@@ -40,22 +36,10 @@ def test_training_projects_only_raw_parameters(
     ctx = PipelineContext(backend="torch", semiring="lse-sum", fold=True, optimize=True)
     circuit = ctx.compile(symbolic)
     partition = ctx.compile(functional.integrate(symbolic))
-    input_params = [
-        p
-        for layer in circuit.layers
-        if isinstance(layer, TorchInputLayer)
-        for p in layer.parameters()
-    ]
-    sum_params = [
-        p
-        for layer in circuit.layers
-        if not isinstance(layer, TorchInputLayer)
-        for p in layer.parameters()
-    ]
-    groups = [(input_params, input_activation), (sum_params, sum_activation)]
-    for params, activation in groups:
-        for p in params:
-            p.fill_(0 if activation == "clamp" else -2)
+    parameters = list({id(p): p for p in circuit.parameters()}.values())
+    with torch.no_grad():
+        for parameter in parameters:
+            parameter.fill_(-2)
 
     adam_step = torch.optim.Adam.step
 
@@ -71,9 +55,8 @@ def test_training_projects_only_raw_parameters(
     nll = make_nll_function(circuit, partition)
 
     def checked_nll(batch):
-        for params, activation in groups:
-            if activation == "clamp":
-                assert all((p >= POSITIVE_PARAMETER_MIN).all() for p in params)
+        if activation == "none":
+            assert all((p >= POSITIVE_PARAMETER_MIN).all() for p in parameters)
         loss = nll(batch)
         assert torch.isfinite(loss)
         return loss
@@ -84,10 +67,7 @@ def test_training_projects_only_raw_parameters(
             partition,
             [(data,)],
             [(data,)],
-            sum_params=sum_params,
-            input_params=input_params,
-            activation=sum_activation,
-            input_activation=input_activation,
+            activation=activation,
             max_train_steps=2,
             lr=0.01,
             T_0=1,
@@ -102,8 +82,15 @@ def test_training_projects_only_raw_parameters(
             log_to_wandb=False,
             nll_fn=checked_nll,
         )
-    for params, activation in groups:
-        for p in params:
-            expected = POSITIVE_PARAMETER_MIN if activation == "clamp" else -2.0
-            torch.testing.assert_close(p, torch.full_like(p, expected), rtol=0, atol=0)
-            assert p.grad is not None and torch.isfinite(p.grad).all()
+    for parameter in parameters:
+        expected = POSITIVE_PARAMETER_MIN if activation == "none" else -2.0
+        torch.testing.assert_close(parameter, torch.full_like(parameter, expected), rtol=0, atol=0)
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
+
+
+def test_runner_exposes_one_activation_for_the_entire_circuit():
+    parser = build_parser()
+    for activation in ("none", "clamp", "softmax", "softplus", "sigmoid"):
+        args = parser.parse_args(["--activation", activation])
+        assert args.activation == activation
+        assert not hasattr(args, "input_activation")

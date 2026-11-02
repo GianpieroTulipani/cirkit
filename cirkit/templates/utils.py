@@ -38,8 +38,10 @@ from cirkit.utils.scope import Scope
 InputSharing: TypeAlias = Literal["none", "full"]
 """Whether categorical input parameters are independent or shared across all inputs."""
 
-CategoricalInputActivation: TypeAlias = Literal["softmax", "none"]
-"""Normalized probabilities or raw positive potentials requiring external projection."""
+CategoricalInputActivation: TypeAlias = Literal[
+    "none", "softmax", "softplus", "sigmoid", "positive-clamp"
+]
+"""Activation applied to categorical input potentials."""
 
 POSITIVE_PARAMETER_MIN = float(np.sqrt(np.finfo(np.float32).tiny))
 """Lower bound for raw positive parameters before taking their logarithm."""
@@ -197,10 +199,12 @@ def categorical_input_layer_factory(
             construct MultichannelCategoricalLayer inputs, in sorted variable order.
         sharing: 'none' for independent parameters or 'full' for references to the
             first input's parameters. Shared inputs must have the same number of units.
-        activation: 'softmax' keeps the default probabilities or custom parameter factories.
-            'none' initializes raw positive potentials uniformly and represents their log
-            through logits. Requires external positivity projection during training and
-            global normalization. Cannot be combined with custom parameter arguments.
+        activation: 'softmax' keeps the default normalized probabilities or custom parameter
+            factories. The other activations construct unnormalized positive potentials and
+            represent their logarithm through logits. 'none' requires external positivity
+            projection during training; 'softplus', 'sigmoid' and 'positive-clamp' enforce
+            positivity inside the parameter graph. Non-softmax activations require global
+            normalization and cannot be combined with custom parameter arguments.
         **kwargs: Categorical layer constructor arguments, such as probs_factory.
 
     Returns:
@@ -213,8 +217,8 @@ def categorical_input_layer_factory(
         raise ValueError(f"Unknown input sharing mode {sharing!r}")
     if activation not in get_args(CategoricalInputActivation):
         raise ValueError(f"Unknown categorical input activation {activation!r}")
-    if activation == "none" and kwargs:
-        raise ValueError("Raw positive inputs do not support custom parameter arguments")
+    if activation != "softmax" and kwargs:
+        raise ValueError("Non-softmax categorical inputs do not support custom parameters")
     if num_categories < 2 or num_channels < 1:
         raise ValueError("Expected at least two categories and a positive number of channels")
     shared_layer: CategoricalLayer | MultichannelCategoricalLayer | None = None
@@ -228,15 +232,22 @@ def categorical_input_layer_factory(
             layer_kwargs = {
                 name: parameter.ref() for name, parameter in shared_layer.params.items()
             }
-        elif activation == "none":
+        elif activation != "softmax":
             shape = (
                 (num_units, num_categories)
                 if num_channels == 1
                 else (num_units, num_channels, num_categories)
             )
-            potentials = TensorParameter(
-                *shape, initializer=UniformInitializer(a=POSITIVE_PARAMETER_MIN, b=1.0)
+            initializer: Initializer = (
+                UniformInitializer(a=POSITIVE_PARAMETER_MIN, b=1.0)
+                if activation in {"none", "positive-clamp"}
+                else NormalInitializer()
             )
+            tensor = TensorParameter(*shape, initializer=initializer)
+            potentials = Parameter.from_input(tensor)
+            activation_factory = name_to_parameter_activation(activation)
+            if activation_factory is not None:
+                potentials = Parameter.from_unary(activation_factory(shape), potentials)
             layer_kwargs = {"logits": Parameter.from_unary(LogParameter(shape), potentials)}
         layer: CategoricalLayer | MultichannelCategoricalLayer
         if num_channels == 1:
@@ -265,7 +276,7 @@ def name_to_parameter_activation(
 
     Args:
         name: The name of the parameter activation. It can be either 'none',
-            'softmax', 'sigmoid', or 'positive-clamp'.
+            'softmax', 'softplus', 'sigmoid', or 'positive-clamp'.
         **kwargs: Optional arguments to pass to symbolic unary parameter.
 
     Returns:

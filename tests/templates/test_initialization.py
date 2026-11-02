@@ -286,7 +286,9 @@ def test_full_sharing_rejects_heterogeneous_cardinalities():
 
 
 @pytest.mark.parametrize("sharing,initialized", itertools.product(["none", "full"], [False, True]))
-@pytest.mark.parametrize("input_activation", ["softmax", "none"])
+@pytest.mark.parametrize(
+    "input_activation", ["none", "softmax", "softplus", "sigmoid", "positive-clamp"]
+)
 def test_sharing_is_independent_of_initialization(sharing, initialized, input_activation):
     circuit = tabular_data(
         data=torch.tensor([[0, 1, 1], [1, 0, 0]]),

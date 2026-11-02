@@ -140,12 +140,47 @@ def test_tabular_raw_inputs_with_heterogeneous_categories(estimated):
     torch.testing.assert_close(circuit(worlds).flatten().logsumexp(0), partition().sum())
 
 
+@pytest.mark.parametrize("activation", ["positive-clamp", "softplus", "sigmoid"])
+@pytest.mark.parametrize("estimated", [False, True])
+def test_local_input_activations_need_no_global_projection(activation, estimated):
+    data = torch.tensor([[0, 0], [0, 1], [1, 0], [1, 1]])
+    symbolic = tabular_data(
+        data=data,
+        input_layers={"name": "categorical", "args": {"num_categories": 2}},
+        input_activation=activation,
+        num_input_units=2,
+        num_sum_units=2,
+        sum_product_layer="cp",
+        sum_weight_param=Parameterization(activation=activation, initialization="uniform"),
+        initialization=DataDrivenInitialization(noise_scale=0.0) if estimated else None,
+    )
+    assert all(layer.probs is None and layer.logits is not None for layer in symbolic.input_layers)
+
+    ctx = PipelineContext(backend="torch", semiring="lse-sum", fold=True, optimize=True)
+    circuit = ctx.compile(symbolic)
+    partition = ctx.compile(functional.integrate(symbolic))
+    with torch.no_grad():
+        for parameter in circuit.parameters():
+            parameter.fill_(-2)
+
+    with torch.enable_grad():
+        scores = circuit(data).flatten()
+        log_partition = partition().sum()
+        torch.testing.assert_close(scores.logsumexp(0), log_partition)
+        loss = -(scores - log_partition).mean()
+        assert torch.isfinite(loss)
+        loss.backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in circuit.parameters())
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
         {"input_activation": "unknown"},
         {"input_activation": "none", "input_layer": "gaussian"},
         {"input_activation": "none", "input_params": {}},
+        {"input_activation": "positive-clamp", "input_layer": "gaussian"},
+        {"input_activation": "softplus", "input_params": {}},
     ],
 )
 def test_invalid_image_input_activation(kwargs):

@@ -94,8 +94,8 @@ def initialize_parameters(
 
     With full input sharing, marginal counts are pooled over all observations and all
     distinct variables at each channel position. All leaves must have matching types,
-    units and category counts. Inputs use softmax probabilities by default, or raw
-    positive potentials represented as log-potentials when input_activation='none'.
+    units and category counts. Inputs use softmax probabilities by default. Other
+    supported activations produce positive potentials represented as log-potentials.
     Structured mixing weights retain their MixingWeightParameter operator.
 
     Args:
@@ -111,10 +111,11 @@ def initialize_parameters(
             softplus, sigmoid and positive-clamp are supported; activation kwargs are not.
         input_sharing: Either 'none' for local marginals or 'full' for pooled marginals
             and a single shared input parameter tensor.
-        input_activation: 'softmax' for normalized input distributions, or 'none' for
-            positive potentials stored through logits=log(potentials). With 'none',
-            keep raw input parameters positive after optimizer steps and normalize the
-            circuit using its partition function. Positivity is ensured at initialization.
+        input_activation: Activation applied to input potentials. 'softmax' produces
+            normalized input distributions. The other supported activations store the
+            logarithm of positive, unnormalized potentials. With 'none', keep all raw
+            parameters positive after optimizer steps. Non-softmax circuits must be
+            normalized using their partition function.
 
     Returns:
         The same circuit, with new learnable symbolic parameters. Softmax inputs and
@@ -193,7 +194,7 @@ def initialize_parameters(
             else:
                 parameter = shared_parameter if layer is shared_owner else shared_parameter.ref()
             layer.probs = parameter if input_activation == "softmax" else None
-            layer.logits = parameter if input_activation == "none" else None
+            layer.logits = parameter if input_activation != "softmax" else None
         elif isinstance(layer, SumLayer):
             features = torch.tensor(sorted(circuit.layer_scope(layer)), device=data.device)
             clusters = _cluster_instances(data, rows, features, len(children), rng)
@@ -271,7 +272,7 @@ def _make_input_parameter(
 ) -> Parameter:
     values = np.broadcast_to(probs, (num_units, *probs.shape)).copy()
     parameter = _parameter_from_probabilities(values, activation, config, rng)
-    if activation == "none":
+    if activation != "softmax":
         return Parameter.from_unary(LogParameter(parameter.shape), parameter)
     return parameter
 
