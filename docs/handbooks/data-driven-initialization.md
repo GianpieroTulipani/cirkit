@@ -256,6 +256,12 @@ Multichannel images support every region graph with `--input-sharing none`; full
 requires `quad-tree-2`, `quad-tree-4`, or `quad-graph`. The script supports `cp`, `cp-t`,
 and `tucker` inner layers.
 
+On CUDA, the script logs allocated and reserved memory in GiB after symbolic circuit
+construction, after a one-time cache cleanup, before training, and after the first
+training step. The cleanup releases unused construction/initialization allocations;
+it does not free live tensors and is not repeated during training. CPU runs skip these
+CUDA operations.
+
 ## Data assumptions and scope
 
 Data-driven initialization currently supports smooth and decomposable circuits composed

@@ -19,6 +19,20 @@ from cirkit.templates.utils import POSITIVE_PARAMETER_MIN, Parameterization
 logger = logging.getLogger(__name__)
 
 
+def _log_cuda_memory(stage: str, device: torch.device | str) -> None:
+    """Report live tensor memory and allocator reservations at a CUDA checkpoint."""
+    device = torch.device(device)
+    if device.type != "cuda":
+        return
+    torch.cuda.synchronize(device)
+    logger.info(
+        "CUDA memory [%s]: allocated=%.2f GiB | reserved=%.2f GiB",
+        stage,
+        torch.cuda.memory_allocated(device) / 2**30,
+        torch.cuda.memory_reserved(device) / 2**30,
+    )
+
+
 def _log_wandb(values: dict) -> None:
     """Log metrics only when Weights & Biases is explicitly enabled."""
     import wandb
@@ -311,6 +325,8 @@ def train_circuit(
                         p.clamp_(min=POSITIVE_PARAMETER_MIN)
 
             total_steps += 1
+            if total_steps == 1:
+                _log_cuda_memory("after first training step", device)
 
             if total_steps % validation_steps == 0:
                 circuit.eval()
@@ -585,6 +601,11 @@ def main() -> None:
         input_sharing=args.input_sharing,
         activation=parameter_activation,
     )
+    if device.type == "cuda":
+        _log_cuda_memory("after circuit construction", device)
+        # Release unused structure-learning/initialization allocations once, before training.
+        torch.cuda.empty_cache()
+        _log_cuda_memory("after construction cache cleanup", device)
 
     symbolic_partition_function = sf.integrate(symbolic_circuit)
 
@@ -606,6 +627,7 @@ def main() -> None:
     )
 
     logger.info(f"Number of parameters: {sum(p.numel() for p in circuit.parameters())}")
+    _log_cuda_memory("before training", device)
 
     num_dimensions = int(np.prod(image_shape))
     train_circuit(
