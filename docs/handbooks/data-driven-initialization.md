@@ -256,24 +256,6 @@ Multichannel images support every region graph with `--input-sharing none`; full
 requires `quad-tree-2`, `quad-tree-4`, or `quad-graph`. The script supports `cp`, `cp-t`,
 and `tucker` inner layers.
 
-On CUDA, the script automatically logs memory in GiB before and after symbolic circuit
-construction, after a one-time cache cleanup, after compilation, before training, after
-the first training step, after each validation, and at the end of training:
-
-- `allocated`: memory occupied by live PyTorch tensors in this process.
-- `reserved`: all memory managed by this process's PyTorch allocator, including
-  `allocated`; `reserved_unused` is the difference. Do not add these values together.
-- `peak_allocated` and `peak_reserved`: allocator high-water marks, including temporary
-  allocations released between log messages. Peak counters are reset before construction
-  and again before training; training peaks include validation and are cumulative.
-- `device_used`, `device_free`, and `device_total`: device-wide CUDA memory usage and
-  capacity, including allocations outside PyTorch and other processes. These are current
-  readings at each checkpoint, not device-wide peaks or this process's usage alone.
-
-The cleanup releases unused construction/initialization allocations; it does not free
-live tensors and is not repeated during training. Peak resets only reset statistics,
-not allocations. CPU runs skip these CUDA operations.
-
 ## Data assumptions and scope
 
 Data-driven initialization currently supports smooth and decomposable circuits composed

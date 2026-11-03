@@ -19,37 +19,6 @@ from cirkit.templates.utils import POSITIVE_PARAMETER_MIN, Parameterization
 logger = logging.getLogger(__name__)
 
 
-def _log_cuda_memory(stage: str, device: torch.device | str, *, reset_peaks: bool = False) -> None:
-    """Report process allocator statistics and device-wide usage at a CUDA checkpoint."""
-    device = torch.device(device)
-    if device.type != "cuda":
-        return
-    torch.cuda.synchronize(device)
-    if reset_peaks:
-        torch.cuda.reset_peak_memory_stats(device)
-    allocated = torch.cuda.memory_allocated(device)
-    reserved = torch.cuda.memory_reserved(device)
-    free, total = torch.cuda.mem_get_info(device)
-    logger.info(
-        "CUDA memory [%s]: allocated=%.2f GiB | reserved=%.2f GiB | "
-        "reserved_unused=%.2f GiB | peak_allocated=%.2f GiB | peak_reserved=%.2f GiB",
-        stage,
-        allocated / 2**30,
-        reserved / 2**30,
-        (reserved - allocated) / 2**30,
-        torch.cuda.max_memory_allocated(device) / 2**30,
-        torch.cuda.max_memory_reserved(device) / 2**30,
-    )
-    # Device-wide usage also includes CUDA contexts, external allocations, and other processes.
-    logger.info(
-        "GPU memory [%s]: device_used=%.2f GiB | device_free=%.2f GiB | device_total=%.2f GiB",
-        stage,
-        (total - free) / 2**30,
-        free / 2**30,
-        total / 2**30,
-    )
-
-
 def _log_wandb(values: dict) -> None:
     """Log metrics only when Weights & Biases is explicitly enabled."""
     import wandb
@@ -316,8 +285,6 @@ def train_circuit(
     saved_best = False
 
     print(f"Starting training for a maximum of {max_train_steps} steps.\n")
-    # Keep construction peaks separate; subsequent peaks include training and validation.
-    _log_cuda_memory("before training (peaks reset)", device, reset_peaks=True)
 
     while total_steps < max_train_steps and epochs_no_improve < patience:
         circuit.train()
@@ -344,14 +311,11 @@ def train_circuit(
                         p.clamp_(min=POSITIVE_PARAMETER_MIN)
 
             total_steps += 1
-            if total_steps == 1:
-                _log_cuda_memory("after first training step", device)
 
             if total_steps % validation_steps == 0:
                 circuit.eval()
                 avg_train_nll = train_loss_sum.item() / train_count
                 avg_val_nll = _mean_nll(nll_fn, val_loader, device)
-                _log_cuda_memory(f"training step {total_steps} (after validation)", device)
                 bpd_train = avg_train_nll / (num_dimensions * np.log(2.0))
                 bpd_val = avg_val_nll / (num_dimensions * np.log(2.0))
 
@@ -390,8 +354,6 @@ def train_circuit(
 
             if total_steps >= max_train_steps:
                 break
-
-    _log_cuda_memory(f"training complete at step {total_steps}", device)
 
     if not saved_best:
         torch.save(circuit.state_dict(), save_path)
@@ -607,7 +569,6 @@ def main() -> None:
         activation=parameter_activation,
         initialization=args.weights_init,
     )
-    _log_cuda_memory("before circuit construction (peaks reset)", device, reset_peaks=True)
     symbolic_circuit = image_data(
         image_shape,
         data=X_train.to(device),
@@ -624,11 +585,6 @@ def main() -> None:
         input_sharing=args.input_sharing,
         activation=parameter_activation,
     )
-    if device.type == "cuda":
-        _log_cuda_memory("after circuit construction", device)
-        # Release unused structure-learning/initialization allocations once, before training.
-        torch.cuda.empty_cache()
-        _log_cuda_memory("after construction cache cleanup", device)
 
     symbolic_partition_function = sf.integrate(symbolic_circuit)
 
@@ -650,7 +606,6 @@ def main() -> None:
     )
 
     logger.info(f"Number of parameters: {sum(p.numel() for p in circuit.parameters())}")
-    _log_cuda_memory("after circuit compilation", device)
 
     num_dimensions = int(np.prod(image_shape))
     train_circuit(
