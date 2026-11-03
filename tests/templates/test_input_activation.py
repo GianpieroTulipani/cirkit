@@ -42,7 +42,7 @@ def test_raw_input_partition_gradients_and_marginals(channels, sharing, estimate
             initialization=DataDrivenInitialization(noise_scale=0.4),
             sum_weight_param=sum_param,
             input_sharing=sharing,
-            input_activation="none",
+            activation="none",
         )
     assert all(layer.probs is None and layer.logits is not None for layer in leaves)
     ctx = PipelineContext(backend="torch", semiring="lse-sum", fold=fold, optimize=optimize)
@@ -95,7 +95,7 @@ def test_rgb_raw_inputs_are_positive_before_first_forward(sharing, estimated):
         (3, 1, 2),
         data=data,
         input_layer="categorical",
-        input_activation="none",
+        activation="none",
         input_sharing=sharing,
         num_input_units=2,
         num_sum_units=2,
@@ -127,7 +127,7 @@ def test_tabular_raw_inputs_with_heterogeneous_categories(estimated):
     symbolic = tabular_data(
         data=data,
         input_layers=[{"name": "categorical", "args": {"num_categories": n}} for n in (2, 3)],
-        input_activation="none",
+        activation="none",
         num_input_units=2,
         num_sum_units=2,
         sum_product_layer="cp",
@@ -147,7 +147,7 @@ def test_local_input_activations_need_no_global_projection(activation, estimated
     symbolic = tabular_data(
         data=data,
         input_layers={"name": "categorical", "args": {"num_categories": 2}},
-        input_activation=activation,
+        activation=activation,
         num_input_units=2,
         num_sum_units=2,
         sum_product_layer="cp",
@@ -176,11 +176,11 @@ def test_local_input_activations_need_no_global_projection(activation, estimated
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"input_activation": "unknown"},
-        {"input_activation": "none", "input_layer": "gaussian"},
-        {"input_activation": "none", "input_params": {}},
-        {"input_activation": "positive-clamp", "input_layer": "gaussian"},
-        {"input_activation": "softplus", "input_params": {}},
+        {"activation": "unknown"},
+        {"activation": "none", "input_layer": "gaussian"},
+        {"activation": "none", "input_params": {}},
+        {"activation": "positive-clamp", "input_layer": "gaussian"},
+        {"activation": "softplus", "input_params": {}},
     ],
 )
 def test_invalid_image_input_activation(kwargs):

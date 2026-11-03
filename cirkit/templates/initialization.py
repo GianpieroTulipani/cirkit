@@ -82,7 +82,7 @@ def initialize_parameters(
     initialization: DataDrivenInitialization,
     sum_weight_param: Parameterization,
     input_sharing: InputSharing = "none",
-    input_activation: CategoricalInputActivation = "softmax",
+    activation: CategoricalInputActivation = "softmax",
 ) -> Circuit:
     """Replace the parameters of a newly built categorical circuit in place.
 
@@ -111,7 +111,7 @@ def initialize_parameters(
             softplus, sigmoid and positive-clamp are supported; activation kwargs are not.
         input_sharing: Either 'none' for local marginals or 'full' for pooled marginals
             and a single shared input parameter tensor.
-        input_activation: Activation applied to input potentials. 'softmax' produces
+        activation: Activation applied to input potentials. 'softmax' produces
             normalized input distributions. The other supported activations store the
             logarithm of positive, unnormalized potentials. With 'none', keep all raw
             parameters positive after optimizer steps. Non-softmax circuits must be
@@ -126,8 +126,8 @@ def initialize_parameters(
     """
     if input_sharing not in get_args(InputSharing):
         raise ValueError(f"Unknown input sharing mode {input_sharing!r}")
-    if input_activation not in get_args(CategoricalInputActivation):
-        raise ValueError(f"Unknown categorical input activation {input_activation!r}")
+    if activation not in get_args(CategoricalInputActivation):
+        raise ValueError(f"Unknown categorical input activation {activation!r}")
     if data.ndim != 2 or data.shape[0] == 0 or data.shape[1] == 0:
         raise ValueError("Expected a non-empty data matrix of shape (num_samples, num_variables)")
     if data.is_complex() or not bool(torch.isfinite(data).all()):
@@ -166,7 +166,7 @@ def initialize_parameters(
     for output in circuit.outputs:
         pending[output].append(all_rows)
     shared_parameter = (
-        _shared_input_parameter(circuit, data, initialization, rng, input_activation)
+        _shared_input_parameter(circuit, data, initialization, rng, activation)
         if input_sharing == "full"
         else None
     )
@@ -189,12 +189,12 @@ def initialize_parameters(
                 )
                 probs = marginals[0] if isinstance(layer, CategoricalLayer) else marginals
                 parameter = _make_input_parameter(
-                    probs, layer.num_output_units, initialization, rng, input_activation
+                    probs, layer.num_output_units, initialization, rng, activation
                 )
             else:
                 parameter = shared_parameter if layer is shared_owner else shared_parameter.ref()
-            layer.probs = parameter if input_activation == "softmax" else None
-            layer.logits = parameter if input_activation != "softmax" else None
+            layer.probs = parameter if activation == "softmax" else None
+            layer.logits = parameter if activation != "softmax" else None
         elif isinstance(layer, SumLayer):
             features = torch.tensor(sorted(circuit.layer_scope(layer)), device=data.device)
             clusters = _cluster_instances(data, rows, features, len(children), rng)

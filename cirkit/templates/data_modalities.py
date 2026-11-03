@@ -78,7 +78,7 @@ def image_data(  # pylint: disable=too-many-arguments
     mi_chunk_size: int | None = None,
     initialization: DataDrivenInitialization | None = None,
     input_sharing: str = "none",
-    input_activation: CategoricalInputActivation = "softmax",
+    activation: CategoricalInputActivation = "softmax",
 ) -> Circuit:
     """Constructs a symbolic circuit whose structure is tailored for image data sets.
 
@@ -141,7 +141,7 @@ def image_data(  # pylint: disable=too-many-arguments
             categorical distributions at each pixel and requires a QuadGraph or QuadTree.
             Parameters are shared across pixels, while channels have distinct distributions.
             With initialization enabled, shared marginals pool all samples and pixels.
-        input_activation: Activation applied to categorical input potentials. 'softmax'
+        activation: Activation applied to categorical input potentials. 'softmax'
             produces normalized inputs. 'none' uses raw potentials and requires external
             positivity projection after optimizer steps. 'softplus', 'sigmoid' and
             'positive-clamp' enforce positivity inside the parameter graph. Non-softmax
@@ -188,9 +188,9 @@ def image_data(  # pylint: disable=too-many-arguments
         raise ValueError(f"Unknown sum-product layer called {sum_product_layer}")
     if input_sharing not in ["none", "full"]:
         raise ValueError(f"Unknown input sharing mode {input_sharing!r}")
-    if input_activation not in get_args(CategoricalInputActivation):
-        raise ValueError(f"Unknown categorical input activation {input_activation!r}")
-    if input_activation != "softmax" and (input_layer != "categorical" or input_params is not None):
+    if activation not in get_args(CategoricalInputActivation):
+        raise ValueError(f"Unknown categorical input activation {activation!r}")
+    if activation != "softmax" and (input_layer != "categorical" or input_params is not None):
         raise ValueError("Non-softmax inputs require categorical layers and no input_params")
     if input_sharing == "full" and input_layer != "categorical":
         raise ValueError("Full input sharing requires categorical inputs")
@@ -311,7 +311,7 @@ def image_data(  # pylint: disable=too-many-arguments
         categorical_input_layer_factory(
             num_channels=image_shape[0] if multichannel else 1,
             sharing="full" if input_sharing == "full" else "none",
-            activation=input_activation,
+            activation=activation,
             **input_kwargs,
         )
         if input_layer == "categorical"
@@ -351,7 +351,7 @@ def image_data(  # pylint: disable=too-many-arguments
             initialization=initialization,
             sum_weight_param=sum_weight_param,
             input_sharing="full" if input_sharing == "full" else "none",
-            input_activation=input_activation,
+            activation=activation,
         )
     return circuit
 
@@ -370,7 +370,7 @@ def tabular_data(
     use_mixing_weights: bool = True,
     initialization: DataDrivenInitialization | None = None,
     input_sharing: str = "none",
-    input_activation: CategoricalInputActivation = "softmax",
+    activation: CategoricalInputActivation = "softmax",
 ) -> Circuit:
     """
     Constructs a symbolic circuit whose structure is tailored for tabular data sets,
@@ -426,7 +426,7 @@ def tabular_data(
             parameter tensor. Full sharing requires identical input specifications and
             assumes the features have the same domain. When initializing from data, it
             pools observations across all features, unlike per-channel pooling for images.
-        input_activation:
+        activation:
             Activation applied to categorical input potentials. 'softmax' produces normalized
             inputs. 'none' requires external positivity projection; 'softplus', 'sigmoid' and
             'positive-clamp' enforce positivity inside the parameter graph. Non-softmax inputs
@@ -452,12 +452,12 @@ def tabular_data(
         raise ValueError(f"Unknown sum-product layer called {sum_product_layer}")
     if input_sharing not in ["none", "full"]:
         raise ValueError(f"Unknown input sharing mode {input_sharing!r}")
-    if input_activation not in get_args(CategoricalInputActivation):
-        raise ValueError(f"Unknown categorical input activation {input_activation!r}")
+    if activation not in get_args(CategoricalInputActivation):
+        raise ValueError(f"Unknown categorical input activation {activation!r}")
     specs = [input_layers] if isinstance(input_layers, dict) else input_layers
     if not specs or any("name" not in spec or "args" not in spec for spec in specs):
         raise ValueError("Expected input specifications with name and args")
-    if input_activation != "softmax" and any(
+    if activation != "softmax" and any(
         spec["name"] != "categorical" or set(spec["args"]) != {"num_categories"} for spec in specs
     ):
         raise ValueError("Non-softmax inputs require categorical inputs with num_categories only")
@@ -549,18 +549,16 @@ def tabular_data(
         if isinstance(input_layers, list) and len(input_layers) != len(rg.scope):
             raise ValueError("Number of input layers must match the number of features")
         input_factories = categorical_input_layer_factory(
-            sharing="full", activation=input_activation, **specs[0]["args"]
+            sharing="full", activation=activation, **specs[0]["args"]
         )
-    elif input_activation != "softmax":
+    elif activation != "softmax":
         if isinstance(input_layers, list) and len(input_layers) != len(rg.scope):
             raise ValueError("Number of input layers must match the number of features")
         input_factories = (
-            categorical_input_layer_factory(activation=input_activation, **input_layers["args"])
+            categorical_input_layer_factory(activation=activation, **input_layers["args"])
             if isinstance(input_layers, dict)
             else {
-                Scope([i]): categorical_input_layer_factory(
-                    activation=input_activation, **spec["args"]
-                )
+                Scope([i]): categorical_input_layer_factory(activation=activation, **spec["args"])
                 for i, spec in enumerate(input_layers)
             }
         )
@@ -595,6 +593,6 @@ def tabular_data(
             initialization=initialization,
             sum_weight_param=sum_weight_param,
             input_sharing="full" if input_sharing == "full" else "none",
-            input_activation=input_activation,
+            activation=activation,
         )
     return circuit

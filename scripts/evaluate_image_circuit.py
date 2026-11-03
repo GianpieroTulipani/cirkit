@@ -416,13 +416,45 @@ def build_parser() -> argparse.ArgumentParser:
     add("--root", default="datasets")
     add("--image-shape", type=int, nargs=3, metavar=("C", "H", "W"))
     add("--ycc", default="none", choices=["none", "lossy", "lossless"])
-    add("--input-sharing", default="none", choices=["none", "full"])
+    add(
+        "--input-sharing",
+        default="none",
+        choices=["none", "full"],
+        help="Full sharing on multichannel images requires a quad-tree or quad-graph RG.",
+    )
     add(
         "--rg",
         default="quad-tree-2",
-        choices=["quad-tree-2", "quad-tree-4", "quad-graph"],
+        choices=[
+            "quad-tree-2",
+            "quad-tree-4",
+            "quad-graph",
+            "random-binary-tree",
+            "poon-domingos",
+            "chow-liu-tree",
+            "linear-tree",
+        ],
+        help="Region graph; chow-liu-tree learns its structure from the training split.",
     )
-    add("--inner-layer", default="cp", choices=["cp", "tucker"])
+    add(
+        "--num-bins",
+        type=int,
+        default=None,
+        help=(
+            "Chow-Liu structure learning only: bin pixel values into 1..256 categories. "
+            "Defaults to all 256 levels; input distributions still use 256 categories."
+        ),
+    )
+    add(
+        "--mi-chunk-size",
+        type=int,
+        default=None,
+        help=(
+            "Chow-Liu only: positive sample count per mutual-information chunk. "
+            "Defaults to all training samples; does not reduce the joint-count table size."
+        ),
+    )
+    add("--inner-layer", default="cp", choices=["cp", "cp-t", "tucker"])
     add("--k", type=int, default=512)
     add(
         "--activation",
@@ -476,6 +508,10 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     parser = build_parser()
     args = parser.parse_args()
+    if args.num_bins is not None and not 1 <= args.num_bins <= 256:
+        parser.error("--num-bins must be between 1 and 256")
+    if args.mi_chunk_size is not None and args.mi_chunk_size <= 0:
+        parser.error("--mi-chunk-size must be positive")
     if args.torch_compile and args.compile_backend != "inductor" and args.compile_mode != "default":
         parser.error("Non-default --compile-mode requires --compile-backend=inductor")
 
@@ -498,6 +534,15 @@ def main() -> None:
         run = None
 
     X_train, X_val, X_test, image_shape = load_discrete_image_dataset(args)
+    if (
+        image_shape[0] > 1
+        and args.input_sharing == "full"
+        and args.rg not in {"quad-tree-2", "quad-tree-4", "quad-graph"}
+    ):
+        parser.error(
+            "Multichannel --input-sharing full requires a quad-tree or quad-graph RG; "
+            "use --input-sharing none with this RG"
+        )
     logger.info(
         f"Loaded {args.dataset}: train={tuple(X_train.shape)}, val={tuple(X_val.shape)}, test={tuple(X_test.shape)}"
     )
@@ -529,6 +574,8 @@ def main() -> None:
         data=X_train.to(device),
         input_layer="categorical",
         region_graph=args.rg,
+        num_bins=args.num_bins,
+        mi_chunk_size=args.mi_chunk_size,
         sum_weight_param=sum_weight_param,
         sum_product_layer=args.inner_layer,
         num_input_units=args.k,
@@ -536,7 +583,7 @@ def main() -> None:
         use_mixing_weights=args.use_mixing_weights,
         initialization=initialization,
         input_sharing=args.input_sharing,
-        input_activation=parameter_activation,
+        activation=parameter_activation,
     )
 
     symbolic_partition_function = sf.integrate(symbolic_circuit)

@@ -179,7 +179,7 @@ for tensorized probabilistic circuits [3].
 
 ## Normalized and raw parameterizations
 
-The default `input_activation="softmax"` produces locally normalized categorical
+The default `activation="softmax"` produces locally normalized categorical
 inputs. Softmax-parameterized sum weights are locally normalized as well. If every sum
 and input uses a normalized parameterization, a smooth and decomposable circuit with a
 single normalized output represents a normalized distribution.
@@ -234,6 +234,27 @@ for density estimation on MNIST.
 `initialize_parameters` can also be called directly on a newly constructed circuit.
 It replaces symbolic parameters in place, so call it before compilation and before
 constructing derived circuits that reference the old parameters.
+
+The image evaluation script accepts every image region graph through `--rg`:
+`quad-tree-2` (default), `quad-tree-4`, `quad-graph`, `random-binary-tree`,
+`poon-domingos`, `chow-liu-tree`, and `linear-tree`. For example:
+
+```bash
+python -m scripts.evaluate_image_circuit --dataset mnist --rg chow-liu-tree --inner-layer cp-t --k 64 --activation softmax --input-sharing full --num-bins 8 --mi-chunk-size 128
+```
+
+Chow-Liu learns its structure from the training split, independently of
+`--use-estimated-weights`. The optional `--num-bins` (1 to 256) affects only structure
+learning; input distributions and parameter initialization retain all 256 pixel levels.
+The optional `--mi-chunk-size` must be positive and limits the samples processed at once.
+Without these options, all pixel levels and all training samples are used. Chunking does
+not reduce the joint-count table, whose size is quadratic in both the number of variables
+and the number of bins. Both options are ignored for other region graphs.
+
+All region graphs support single-channel images with either input-sharing mode.
+Multichannel images support every region graph with `--input-sharing none`; full sharing
+requires `quad-tree-2`, `quad-tree-4`, or `quad-graph`. The script supports `cp`, `cp-t`,
+and `tucker` inner layers.
 
 ## Data assumptions and scope
 

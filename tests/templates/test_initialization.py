@@ -286,10 +286,8 @@ def test_full_sharing_rejects_heterogeneous_cardinalities():
 
 
 @pytest.mark.parametrize("sharing,initialized", itertools.product(["none", "full"], [False, True]))
-@pytest.mark.parametrize(
-    "input_activation", ["none", "softmax", "softplus", "sigmoid", "positive-clamp"]
-)
-def test_sharing_is_independent_of_initialization(sharing, initialized, input_activation):
+@pytest.mark.parametrize("activation", ["none", "softmax", "softplus", "sigmoid", "positive-clamp"])
+def test_sharing_is_independent_of_initialization(sharing, initialized, activation):
     circuit = tabular_data(
         data=torch.tensor([[0, 1, 1], [1, 0, 0]]),
         input_layers={"name": "categorical", "args": {"num_categories": 2}},
@@ -298,7 +296,7 @@ def test_sharing_is_independent_of_initialization(sharing, initialized, input_ac
         num_sum_units=2,
         input_sharing=sharing,
         initialization=DataDrivenInitialization() if initialized else None,
-        input_activation=input_activation,
+        activation=activation,
     )
     compiled = PipelineContext(backend="torch", fold=True, optimize=True).compile(circuit)
     parameters = {
