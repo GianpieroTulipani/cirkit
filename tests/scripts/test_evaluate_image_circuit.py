@@ -8,31 +8,33 @@ import sys
 import pytest
 import torch
 
+from cirkit.backend.torch.layers import TorchInputLayer
 from cirkit.pipeline import PipelineContext
 from cirkit.symbolic import functional
 from cirkit.templates import data_modalities
 from cirkit.templates.data_modalities import image_data
 from cirkit.templates.initialization import DataDrivenInitialization
 from cirkit.templates.utils import POSITIVE_PARAMETER_MIN, Parameterization
+from scripts import evaluate_image_circuit
 from scripts.evaluate_image_circuit import build_parser, main, make_nll_function, train_circuit
 
 
 @pytest.mark.parametrize("activation", ["none", "clamp", "softmax", "softplus", "sigmoid"])
 @pytest.mark.parametrize("estimated", [False, True])
-def test_training_projects_all_parameters_only_for_none(
-    activation, estimated, monkeypatch, tmp_path
+@pytest.mark.parametrize("channels,sharing", [(1, "none"), (3, "full")])
+def test_training_projects_only_sum_weights_for_none(
+    activation, estimated, channels, sharing, monkeypatch, tmp_path
 ):
-    data = torch.tensor([[0, 0, 1, 1, 0, 1], [1, 0, 0, 1, 1, 0]])
+    data = torch.tensor([[0, 1], [1, 0]]).repeat(1, channels)
     parameter_activation = "positive-clamp" if activation == "clamp" else activation
     symbolic = image_data(
-        (3, 1, 2),
+        (channels, 1, 2),
         input_layer="categorical",
         num_input_units=2,
         num_sum_units=2,
         sum_product_layer="cp",
-        input_sharing="full",
+        input_sharing=sharing,
         data=data,
-        activation=parameter_activation,
         sum_weight_param=Parameterization(
             activation=parameter_activation,
             initialization="uniform",
@@ -43,6 +45,9 @@ def test_training_projects_all_parameters_only_for_none(
     circuit = ctx.compile(symbolic)
     partition = ctx.compile(functional.integrate(symbolic))
     parameters = list({id(p): p for p in circuit.parameters()}.values())
+    input_layers = [layer for layer in circuit.layers if isinstance(layer, TorchInputLayer)]
+    input_ids = {id(p) for layer in input_layers for p in layer.parameters()}
+    assert input_ids and any(id(p) not in input_ids for p in parameters)
     with torch.no_grad():
         for parameter in parameters:
             parameter.fill_(-2)
@@ -61,8 +66,15 @@ def test_training_projects_all_parameters_only_for_none(
     nll = make_nll_function(circuit, partition)
 
     def checked_nll(batch):
-        if activation == "none":
-            assert all((p >= POSITIVE_PARAMETER_MIN).all() for p in parameters)
+        for p in parameters:
+            if id(p) in input_ids:
+                # Negative input logits are valid before and after optimizer updates.
+                torch.testing.assert_close(p, torch.full_like(p, -2.0), rtol=0, atol=0)
+            elif activation == "none":
+                assert (p >= POSITIVE_PARAMETER_MIN).all()
+        for layer in input_layers:
+            probs = layer.probs()
+            torch.testing.assert_close(probs.sum(-1), torch.ones_like(probs.sum(-1)))
         loss = nll(batch)
         assert torch.isfinite(loss)
         return loss
@@ -84,17 +96,21 @@ def test_training_projects_all_parameters_only_for_none(
             validation_steps=1,
             delta=0.0,
             patience=3,
-            num_dimensions=6,
+            num_dimensions=2 * channels,
             log_to_wandb=False,
             nll_fn=checked_nll,
         )
     for parameter in parameters:
-        expected = POSITIVE_PARAMETER_MIN if activation == "none" else -2.0
+        expected = (
+            POSITIVE_PARAMETER_MIN
+            if activation == "none" and id(parameter) not in input_ids
+            else -2.0
+        )
         torch.testing.assert_close(parameter, torch.full_like(parameter, expected), rtol=0, atol=0)
         assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
 
 
-def test_runner_exposes_one_activation_for_the_entire_circuit():
+def test_runner_exposes_sum_activation_choices():
     parser = build_parser()
     for activation in ("none", "clamp", "softmax", "softplus", "sigmoid"):
         args = parser.parse_args(["--activation", activation])
@@ -136,7 +152,7 @@ def test_runner_trains_and_evaluates_image_region_graphs(
         "--inner-layer",
         "cp-t",
         "--activation",
-        "softmax",
+        "none",
         "--k",
         "2",
         "--batch-size",
@@ -160,6 +176,28 @@ def test_runner_trains_and_evaluates_image_region_graphs(
         monkeypatch.setattr(data_modalities, "ChowLiuTree", record_tree_data)
     if estimated:
         argv.append("--use-estimated-weights")
+    nll_factory = evaluate_image_circuit.make_nll_function
+    input_parameters = {}
+
+    def check_softmax_inputs(circuit, partition, **kwargs):
+        input_layers = [layer for layer in circuit.layers if isinstance(layer, TorchInputLayer)]
+        for layer in input_layers:
+            assert layer.probs is not None and layer.logits is None
+            for p in layer.parameters():
+                input_parameters[id(p)] = p
+        assert any((p < 0).any() for p in input_parameters.values())
+        nll = nll_factory(circuit, partition, **kwargs)
+
+        def checked_nll(batch):
+            for layer in input_layers:
+                probs = layer.probs()
+                torch.testing.assert_close(probs.sum(-1), torch.ones_like(probs.sum(-1)))
+            assert any((p < 0).any() for p in input_parameters.values())
+            return nll(batch)
+
+        return checked_nll
+
+    monkeypatch.setattr(evaluate_image_circuit, "make_nll_function", check_softmax_inputs)
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     caplog.set_level(logging.INFO, logger="scripts.evaluate_image_circuit")

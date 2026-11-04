@@ -28,7 +28,6 @@ from cirkit.symbolic.layers import (
     SumLayer,
 )
 from cirkit.symbolic.parameters import (
-    LogParameter,
     MixingWeightParameter,
     Parameter,
     TensorParameter,
@@ -36,7 +35,6 @@ from cirkit.symbolic.parameters import (
 )
 from cirkit.templates.utils import (
     POSITIVE_PARAMETER_MIN,
-    CategoricalInputActivation,
     InputSharing,
     Parameterization,
     name_to_parameter_activation,
@@ -82,7 +80,6 @@ def initialize_parameters(
     initialization: DataDrivenInitialization,
     sum_weight_param: Parameterization,
     input_sharing: InputSharing = "none",
-    activation: CategoricalInputActivation = "softmax",
 ) -> Circuit:
     """Replace the parameters of a newly built categorical circuit in place.
 
@@ -94,8 +91,7 @@ def initialize_parameters(
 
     With full input sharing, marginal counts are pooled over all observations and all
     distinct variables at each channel position. All leaves must have matching types,
-    units and category counts. Inputs use softmax probabilities by default. Other
-    supported activations produce positive potentials represented as log-potentials.
+    units and category counts. Inputs always use softmax probabilities.
     Structured mixing weights retain their MixingWeightParameter operator.
 
     Args:
@@ -111,11 +107,6 @@ def initialize_parameters(
             softplus, sigmoid and positive-clamp are supported; activation kwargs are not.
         input_sharing: Either 'none' for local marginals or 'full' for pooled marginals
             and a single shared input parameter tensor.
-        activation: Activation applied to input potentials. 'softmax' produces
-            normalized input distributions. The other supported activations store the
-            logarithm of positive, unnormalized potentials. With 'none', keep all raw
-            parameters positive after optimizer steps. Non-softmax circuits must be
-            normalized using their partition function.
 
     Returns:
         The same circuit, with new learnable symbolic parameters. Softmax inputs and
@@ -126,8 +117,6 @@ def initialize_parameters(
     """
     if input_sharing not in get_args(InputSharing):
         raise ValueError(f"Unknown input sharing mode {input_sharing!r}")
-    if activation not in get_args(CategoricalInputActivation):
-        raise ValueError(f"Unknown categorical input activation {activation!r}")
     if data.ndim != 2 or data.shape[0] == 0 or data.shape[1] == 0:
         raise ValueError("Expected a non-empty data matrix of shape (num_samples, num_variables)")
     if data.is_complex() or not bool(torch.isfinite(data).all()):
@@ -166,7 +155,7 @@ def initialize_parameters(
     for output in circuit.outputs:
         pending[output].append(all_rows)
     shared_parameter = (
-        _shared_input_parameter(circuit, data, initialization, rng, activation)
+        _shared_input_parameter(circuit, data, initialization, rng)
         if input_sharing == "full"
         else None
     )
@@ -189,12 +178,12 @@ def initialize_parameters(
                 )
                 probs = marginals[0] if isinstance(layer, CategoricalLayer) else marginals
                 parameter = _make_input_parameter(
-                    probs, layer.num_output_units, initialization, rng, activation
+                    probs, layer.num_output_units, initialization, rng
                 )
             else:
                 parameter = shared_parameter if layer is shared_owner else shared_parameter.ref()
-            layer.probs = parameter if activation == "softmax" else None
-            layer.logits = parameter if activation != "softmax" else None
+            layer.probs = parameter
+            layer.logits = None
         elif isinstance(layer, SumLayer):
             features = torch.tensor(sorted(circuit.layer_scope(layer)), device=data.device)
             clusters = _cluster_instances(data, rows, features, len(children), rng)
@@ -247,7 +236,6 @@ def _shared_input_parameter(
     data: Tensor,
     config: DataDrivenInitialization,
     rng: np.random.Generator,
-    activation: CategoricalInputActivation,
 ) -> Parameter:
     inputs = list(circuit.input_layers)
     first = inputs[0]
@@ -260,7 +248,7 @@ def _shared_input_parameter(
         ]
     )
     probs = marginals[0] if isinstance(first, CategoricalLayer) else marginals
-    return _make_input_parameter(probs, first.num_output_units, config, rng, activation)
+    return _make_input_parameter(probs, first.num_output_units, config, rng)
 
 
 def _make_input_parameter(
@@ -268,13 +256,9 @@ def _make_input_parameter(
     num_units: int,
     config: DataDrivenInitialization,
     rng: np.random.Generator,
-    activation: CategoricalInputActivation,
 ) -> Parameter:
     values = np.broadcast_to(probs, (num_units, *probs.shape)).copy()
-    parameter = _parameter_from_probabilities(values, activation, config, rng)
-    if activation != "softmax":
-        return Parameter.from_unary(LogParameter(parameter.shape), parameter)
-    return parameter
+    return _parameter_from_probabilities(values, "softmax", config, rng)
 
 
 def _make_sum_parameter(

@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
 import cirkit.symbolic.functional as sf
+from cirkit.backend.torch.layers import TorchInputLayer
 from cirkit.pipeline import PipelineContext
 from cirkit.templates.data_modalities import image_data
 from cirkit.templates.initialization import DataDrivenInitialization
@@ -256,15 +257,23 @@ def train_circuit(
 ):
     if nll_fn is None:
         nll_fn = make_nll_function(circuit, partition_function)
-    # activation='none' means there is no local activation in any parameter graph.
-    # Keep every raw parameter in the circuit positive with a single global projection.
-    # The CLI's activation='clamp' is different: it maps to Cirkit's local
-    # positive-clamp activation and therefore requires no optimizer-side projection.
-    globally_projected_params = (
-        list({id(p): p for p in circuit.parameters()}.values()) if activation == "none" else []
+    # Inputs use softmax over unconstrained logits, which must never be projected.
+    # Only raw sum weights need positivity projection. With activation='clamp',
+    # sum weights use a local positive-clamp and require no optimizer-side projection.
+    projected_sum_params = (
+        list(
+            {
+                id(p): p
+                for layer in circuit.layers
+                if not isinstance(layer, TorchInputLayer)
+                for p in layer.parameters()
+            }.values()
+        )
+        if activation == "none"
+        else []
     )
     with torch.no_grad():
-        for p in globally_projected_params:
+        for p in projected_sum_params:
             p.clamp_(min=POSITIVE_PARAMETER_MIN)
     optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = (
@@ -305,9 +314,9 @@ def train_circuit(
             if scheduler is not None:
                 scheduler.step()
 
-            if globally_projected_params:
+            if projected_sum_params:
                 with torch.no_grad():
-                    for p in globally_projected_params:
+                    for p in projected_sum_params:
                         p.clamp_(min=POSITIVE_PARAMETER_MIN)
 
             total_steps += 1
@@ -461,12 +470,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="none",
         choices=["none", "clamp", "softmax", "softplus", "sigmoid"],
         help=(
-            "One activation for all input and sum units. 'none' uses raw parameters with a "
-            "global positive projection before training and after optimizer steps; 'clamp' "
-            "uses Cirkit's local positive-clamp parameter activation."
+            "Sum-weight activation; categorical inputs always use softmax. 'none' projects "
+            "only raw sum weights to positive values before training and after optimizer "
+            "steps; 'clamp' uses Cirkit's local positive-clamp parameter activation."
         ),
     )
-    add("--weights-init", default="uniform", choices=["uniform", "normal", "dirichlet"])
+    add(
+        "--weights-init",
+        default="uniform",
+        choices=["uniform", "normal", "dirichlet"],
+        help="Sum-weight initialization; input logits use normal initialization unless estimated.",
+    )
 
     # Training
     add("--lr", type=float, default=0.01)
@@ -549,7 +563,6 @@ def main() -> None:
     logger.info(
         f"Using image_shape={image_shape}, ycc={args.ycc}, input_sharing={args.input_sharing}"
     )
-
     train_loader = DataLoader(TensorDataset(X_train), batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(TensorDataset(X_val), batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(TensorDataset(X_test), batch_size=args.batch_size, shuffle=False)
@@ -583,7 +596,6 @@ def main() -> None:
         use_mixing_weights=args.use_mixing_weights,
         initialization=initialization,
         input_sharing=args.input_sharing,
-        activation=parameter_activation,
     )
 
     symbolic_partition_function = sf.integrate(symbolic_circuit)

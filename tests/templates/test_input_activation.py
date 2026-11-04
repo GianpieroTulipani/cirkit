@@ -1,4 +1,4 @@
-"""Check raw input potentials against exact enumeration and projected training."""
+"""Check softmax inputs with raw or locally activated sum weights."""
 
 import itertools
 
@@ -25,9 +25,11 @@ from cirkit.utils.scope import Scope
 @pytest.mark.parametrize("sharing", ["none", "full"])
 @pytest.mark.parametrize("estimated", [False, True])
 @pytest.mark.parametrize("fold,optimize", list(itertools.product([False, True], repeat=2)))
-def test_raw_input_partition_gradients_and_marginals(channels, sharing, estimated, fold, optimize):
+def test_softmax_input_partition_gradients_and_marginals(
+    channels, sharing, estimated, fold, optimize
+):
     factory = categorical_input_layer_factory(
-        num_categories=2, num_channels=channels, sharing=sharing, activation="none"
+        num_categories=2, num_channels=channels, sharing=sharing
     )
     leaves = [factory(Scope(range(pixel, 2 * channels, 2)), 2) for pixel in range(2)]
     product = HadamardLayer(2, arity=2)
@@ -42,9 +44,8 @@ def test_raw_input_partition_gradients_and_marginals(channels, sharing, estimate
             initialization=DataDrivenInitialization(noise_scale=0.4),
             sum_weight_param=sum_param,
             input_sharing=sharing,
-            activation="none",
         )
-    assert all(layer.probs is None and layer.logits is not None for layer in leaves)
+    assert all(layer.probs is not None and layer.logits is None for layer in leaves)
     ctx = PipelineContext(backend="torch", semiring="lse-sum", fold=fold, optimize=optimize)
     circuit = ctx.compile(symbolic)
     partition = ctx.compile(functional.integrate(symbolic))
@@ -58,9 +59,11 @@ def test_raw_input_partition_gradients_and_marginals(channels, sharing, estimate
         }.values()
     )
     assert sum(p.numel() for p in input_params) == 4 * channels * (1 if sharing == "full" else 2)
-    # Deliberately change the input mass so an assumed unit integral cannot pass.
+    initial_log_z = partition().clone()
+    # Changing input logits changes the distribution but preserves unit input mass.
     for p in input_params:
         p.mul_(3)
+    torch.testing.assert_close(partition(), initial_log_z)
     assert not torch.allclose(partition(), torch.zeros_like(partition()))
 
     with torch.enable_grad():
@@ -73,36 +76,38 @@ def test_raw_input_partition_gradients_and_marginals(channels, sharing, estimate
             torch.testing.assert_close((scores - log_z).exp().sum(), torch.tensor(1.0))
             expected_marginal = scores.reshape(2, -1).logsumexp(dim=0).repeat(2)
             torch.testing.assert_close(marginal(worlds).flatten(), expected_marginal)
-            grads = torch.autograd.grad(log_z, input_params, retain_graph=True)
-            expected_grads = torch.autograd.grad(enumerated_log_z, input_params, retain_graph=True)
+            loss = -(scores[:3] - log_z).mean()
+            enumerated_loss = -(scores[:3] - enumerated_log_z).mean()
+            grads = torch.autograd.grad(loss, input_params, retain_graph=True)
+            expected_grads = torch.autograd.grad(enumerated_loss, input_params, retain_graph=True)
             for actual, expected in zip(grads, expected_grads):
                 torch.testing.assert_close(actual, expected)
             optimizer.zero_grad()
-            loss = -(scores[:3] - log_z).mean()
             loss.backward()
             assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in input_params)
             optimizer.step()
             with torch.no_grad():
-                for p in circuit.parameters():
-                    p.clamp_(min=POSITIVE_PARAMETER_MIN)
+                for layer in circuit.layers:
+                    if not isinstance(layer, TorchInputLayer):
+                        for p in layer.parameters():
+                            p.clamp_(min=POSITIVE_PARAMETER_MIN)
 
 
 @pytest.mark.parametrize("sharing", ["none", "full"])
 @pytest.mark.parametrize("estimated", [False, True])
-def test_rgb_raw_inputs_are_positive_before_first_forward(sharing, estimated):
+def test_rgb_softmax_inputs_have_finite_unseen_categories(sharing, estimated):
     data = torch.zeros(2, 3, 1, 2, dtype=torch.uint8)
     symbolic = image_data(
         (3, 1, 2),
         data=data,
         input_layer="categorical",
-        activation="none",
         input_sharing=sharing,
         num_input_units=2,
         num_sum_units=2,
         sum_product_layer="cp",
         initialization=DataDrivenInitialization(alpha=0.0, noise_scale=0.0) if estimated else None,
     )
-    assert all(layer.probs is None for layer in symbolic.input_layers)
+    assert all(layer.probs is not None and layer.logits is None for layer in symbolic.input_layers)
     ctx = PipelineContext(backend="torch", semiring="lse-sum", fold=True, optimize=True)
     circuit = ctx.compile(symbolic)
     partition = ctx.compile(functional.integrate(symbolic))
@@ -117,17 +122,21 @@ def test_rgb_raw_inputs_are_positive_before_first_forward(sharing, estimated):
         if isinstance(layer, TorchInputLayer)
         for p in layer.parameters()
     }
-    assert all((p >= POSITIVE_PARAMETER_MIN).all() for p in params.values())
+    assert any((p < 0).any() for p in params.values())
+    for layer in circuit.layers:
+        if isinstance(layer, TorchInputLayer):
+            probs = layer.probs()
+            torch.testing.assert_close(probs.sum(-1), torch.ones_like(probs.sum(-1)))
     assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in params.values())
 
 
 @pytest.mark.parametrize("estimated", [False, True])
-def test_tabular_raw_inputs_with_heterogeneous_categories(estimated):
+def test_tabular_softmax_inputs_with_heterogeneous_categories(estimated):
     data = torch.tensor([[0, 0], [1, 2], [0, 1]])
     symbolic = tabular_data(
         data=data,
         input_layers=[{"name": "categorical", "args": {"num_categories": n}} for n in (2, 3)],
-        activation="none",
+        sum_weight_param=Parameterization(activation="none", initialization="uniform"),
         num_input_units=2,
         num_sum_units=2,
         sum_product_layer="cp",
@@ -142,19 +151,18 @@ def test_tabular_raw_inputs_with_heterogeneous_categories(estimated):
 
 @pytest.mark.parametrize("activation", ["positive-clamp", "softplus", "sigmoid"])
 @pytest.mark.parametrize("estimated", [False, True])
-def test_local_input_activations_need_no_global_projection(activation, estimated):
+def test_local_sum_activations_need_no_global_projection(activation, estimated):
     data = torch.tensor([[0, 0], [0, 1], [1, 0], [1, 1]])
     symbolic = tabular_data(
         data=data,
         input_layers={"name": "categorical", "args": {"num_categories": 2}},
-        activation=activation,
         num_input_units=2,
         num_sum_units=2,
         sum_product_layer="cp",
         sum_weight_param=Parameterization(activation=activation, initialization="uniform"),
         initialization=DataDrivenInitialization(noise_scale=0.0) if estimated else None,
     )
-    assert all(layer.probs is None and layer.logits is not None for layer in symbolic.input_layers)
+    assert all(layer.probs is not None and layer.logits is None for layer in symbolic.input_layers)
 
     ctx = PipelineContext(backend="torch", semiring="lse-sum", fold=True, optimize=True)
     circuit = ctx.compile(symbolic)
@@ -171,22 +179,3 @@ def test_local_input_activations_need_no_global_projection(activation, estimated
         assert torch.isfinite(loss)
         loss.backward()
     assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in circuit.parameters())
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"activation": "unknown"},
-        {"activation": "none", "input_layer": "gaussian"},
-        {"activation": "none", "input_params": {}},
-        {"activation": "positive-clamp", "input_layer": "gaussian"},
-        {"activation": "softplus", "input_params": {}},
-    ],
-)
-def test_invalid_image_input_activation(kwargs):
-    options = dict(
-        input_layer="categorical", num_input_units=1, num_sum_units=1, sum_product_layer="cp"
-    )
-    options.update(kwargs)
-    with pytest.raises(ValueError):
-        image_data((1, 1, 2), **options)

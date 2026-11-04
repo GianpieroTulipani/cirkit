@@ -139,9 +139,9 @@ in the same way.
 
 Exact replication would give the units identical initial values and, in symmetric
 architectures, identical gradients. The `noise_scale` parameter adds independent noise
-to let the replicated units specialize during training. If $g$ is the selected
-parameter activation, Cirkit first maps the estimate to the parameter space of $g$,
-adds noise there, and then stores the resulting tensor:
+to let the replicated units specialize during training. Input estimates always use
+softmax: their stored logits are log probabilities plus Gaussian noise. For sum weights,
+Cirkit maps the estimate to the selected activation's parameter space before perturbing it:
 
 | Activation | Stored preactivation before noise |
 | --- | --- |
@@ -179,25 +179,23 @@ for tensorized probabilistic circuits [3].
 
 ## Normalized and raw parameterizations
 
-The default `activation="softmax"` produces locally normalized categorical
-inputs. Softmax-parameterized sum weights are locally normalized as well. If every sum
-and input uses a normalized parameterization, a smooth and decomposable circuit with a
-single normalized output represents a normalized distribution.
+Categorical inputs use softmax probabilities, with normally initialized logits or
+perturbed log empirical probabilities when initializing from data. Input logits remain
+unconstrained throughout training and are never projected to positive values. In the
+image runner, `--activation` and `--weights-init` configure only the sum weights:
 
-The experiment runner uses one activation for every input and sum unit; it does not mix
-different input and inner-unit activations. The two positive raw-weight modes have
-different meanings:
+- `--activation none` adds no local activation to sum weights. Only these weights are
+  projected to `POSITIVE_PARAMETER_MIN` before the first forward pass and after each
+  optimizer step.
+- `--activation clamp` maps to Cirkit's local `positive-clamp` on sum weights, with no
+  optimizer-side projection.
+- `--activation softmax`, `softplus`, or `sigmoid` applies that activation to sum weights
+  while retaining softmax inputs.
 
-- `--activation none` adds no activation to the parameter graphs. Every underlying
-  parameter tensor in the compiled circuit is therefore projected to
-  `POSITIVE_PARAMETER_MIN` before the first forward pass and after each optimizer step.
-- `--activation clamp` maps to Cirkit's `positive-clamp`. The clamp belongs to each
-  symbolic parameter graph, so no optimizer-side global projection is performed.
-
-With `none`, each input stores a learnable positive potential $a$ and exposes $\log a$
-as its categorical logits. `positive-clamp`, `softplus`, and `sigmoid` similarly expose
-the logarithm of their locally positive output. In all these cases the input mass is
-data-dependent and is included by symbolic integration. The normalized log-likelihood is
+The template and initialization APIs configure sum weights through `sum_weight_param`.
+Softmax sum weights give a locally normalized circuit; other activations require global
+normalization. The runner computes the log-likelihood using the current partition
+function, obtained from a symbolically integrated circuit:
 
 $$
 \log p_\theta(\mathbf{x})
@@ -205,11 +203,6 @@ $$
 \qquad
 Z_\theta = \sum_{\mathbf{x}} s_\theta(\mathbf{x}).
 $$
-
-Only the `none` mode needs the global projection during optimization. A normalized
-likelihood also requires the current partition function, obtained from a symbolically
-integrated circuit. Softmax logits and the preactivations of local `positive-clamp`,
-`softplus`, and `sigmoid` operations are unconstrained and may legitimately be negative.
 
 ## Configuration and practical walkthrough
 
