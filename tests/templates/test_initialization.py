@@ -20,7 +20,7 @@ from cirkit.utils.scope import Scope
 
 
 @pytest.mark.parametrize(
-    "sharing,inner", itertools.product(["none", "full"], ["cp", "cp-t", "tucker"])
+    "sharing,inner", tuple(itertools.product(["none", "full"], ["cp", "cp-t", "tucker"]))
 )
 def test_tabular_estimates_match_counts(sharing, inner):
     data = torch.tensor([[0, 0], [0, 1], [0, 1], [1, 1]])
@@ -111,7 +111,7 @@ def test_shared_dag_populations_do_not_duplicate_observations():
     torch.testing.assert_close(compiled(torch.tensor([[0], [1]])), expected)
 
 
-@pytest.mark.parametrize("fold,optimize", itertools.product([False, True], repeat=2))
+@pytest.mark.parametrize("fold,optimize", tuple(itertools.product([False, True], repeat=2)))
 def test_rgb_sharing_pools_pixels_per_channel(fold, optimize):
     data = torch.tensor(
         [[[[0, 0]], [[0, 1]], [[1, 1]]], [[[0, 1]], [[1, 1]], [[1, 0]]]], dtype=torch.uint8
@@ -155,15 +155,15 @@ def test_image_layouts_and_seed(shape, dtype):
     data = torch.tensor([[0, 1, 2, 3], [3, 2, 1, 0], [1, 2, 3, 0]], dtype=dtype).reshape(3, *shape)
     numpy_state = np.random.get_state()
     torch_state = torch.random.get_rng_state().clone()
-    kwargs = dict(
-        image_shape=(1, 2, 2),
-        input_layer="categorical",
-        num_input_units=2,
-        sum_product_layer="cp",
-        num_sum_units=2,
-        data=data,
-        initialization=DataDrivenInitialization(seed=12),
-    )
+    kwargs = {
+        "image_shape": (1, 2, 2),
+        "input_layer": "categorical",
+        "num_input_units": 2,
+        "sum_product_layer": "cp",
+        "num_sum_units": 2,
+        "data": data,
+        "initialization": DataDrivenInitialization(seed=12),
+    }
     first = image_data(**kwargs)
     second = image_data(**kwargs)
     torch.testing.assert_close(torch.random.get_rng_state(), torch_state)
@@ -245,15 +245,15 @@ def test_invalid_initialization_settings(settings):
     ],
 )
 def test_invalid_image_initialization_options(options):
-    kwargs = dict(
-        image_shape=(1, 2, 2),
-        input_layer="categorical",
-        num_input_units=1,
-        sum_product_layer="cp",
-        num_sum_units=1,
-        data=torch.zeros(2, 4),
-        initialization=DataDrivenInitialization(),
-    )
+    kwargs = {
+        "image_shape": (1, 2, 2),
+        "input_layer": "categorical",
+        "num_input_units": 1,
+        "sum_product_layer": "cp",
+        "num_sum_units": 1,
+        "data": torch.zeros(2, 4),
+        "initialization": DataDrivenInitialization(),
+    }
     kwargs.update(options)
     with pytest.raises(ValueError):
         image_data(**kwargs)
@@ -285,7 +285,9 @@ def test_full_sharing_rejects_heterogeneous_cardinalities():
         )
 
 
-@pytest.mark.parametrize("sharing,initialized", itertools.product(["none", "full"], [False, True]))
+@pytest.mark.parametrize(
+    "sharing,initialized", tuple(itertools.product(["none", "full"], [False, True]))
+)
 def test_sharing_is_independent_of_initialization(sharing, initialized):
     circuit = tabular_data(
         data=torch.tensor([[0, 1, 1], [1, 0, 0]]),

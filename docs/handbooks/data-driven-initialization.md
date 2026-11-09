@@ -186,7 +186,7 @@ image runner, `--activation` and `--weights-init` configure only the sum weights
 
 - `--activation none` adds no local activation to sum weights. Only these weights are
   projected to `POSITIVE_PARAMETER_MIN` before the first forward pass and after each
-  optimizer step.
+  optimizer step. Input logits are not clamped.
 - `--activation clamp` maps to Cirkit's local `positive-clamp` on sum weights, with no
   optimizer-side projection.
 - `--activation softmax`, `softplus`, or `sigmoid` applies that activation to sum weights
@@ -223,6 +223,32 @@ The local generator leaves the global NumPy and Torch random states unchanged.
 The executable [data-driven initialization notebook](../../notebooks/data-driven-initialization.ipynb)
 shows how to initialize, compile, train and evaluate a categorical probabilistic circuit
 for density estimation on MNIST.
+
+### Training by optimizer steps
+
+The notebook follows the step-based training workflow in
+[`scripts/evaluate_image_circuit.py`](../../scripts/evaluate_image_circuit.py).
+One step is one minibatch update with Adam. The training loader is reshuffled on each
+pass until the step budget is reached.
+
+| Notebook setting | Meaning |
+| --- | --- |
+| `MAX_TRAIN_STEPS` | Maximum number of optimizer updates. |
+| `VALIDATION_STEPS` | Evaluate the full validation split every this many updates. |
+
+The last step is always validated, including when the budget is smaller than
+`VALIDATION_STEPS`. Training NLL is the sample-weighted mean over updates since the
+previous validation check. History entries record the optimizer step and train/validation
+NLL and bits per dimension.
+
+Both training and evaluation use `-(circuit(batch) - partition()).mean()`.
+With the `lse-sum` semiring, `partition()` returns the current log partition function.
+During training it is recomputed with gradients for every minibatch. When the sum-weight
+activation is `none`, only the raw sum weights are clamped after each update; categorical
+input logits remain unconstrained. The same loss also works with softmax sum weights.
+
+The test split is used only after training. Changing the sum-weight activation requires
+rerunning circuit construction and compilation before training.
 
 `initialize_parameters` can also be called directly on a newly constructed circuit.
 It replaces symbolic parameters in place, so call it before compilation and before

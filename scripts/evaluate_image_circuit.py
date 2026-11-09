@@ -2,11 +2,12 @@
 
 import argparse
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import torch
-import torch.optim as optim
+from torch import optim
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
@@ -18,6 +19,25 @@ from cirkit.templates.initialization import DataDrivenInitialization
 from cirkit.templates.utils import POSITIVE_PARAMETER_MIN, Parameterization
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TrainingConfig:  # pylint: disable=too-many-instance-attributes
+    """Hyperparameters and checkpoint settings for one training run."""
+
+    max_steps: int
+    learning_rate: float
+    scheduler_period: int
+    minimum_learning_rate: float
+    weight_decay: float
+    save_path: str | Path
+    validation_steps: int
+    min_delta: float
+    patience: int
+    num_dimensions: int
+    log_to_wandb: bool = True
+    activation: str = "none"
+    use_scheduler: bool = False
 
 
 def _log_wandb(values: dict) -> None:
@@ -59,8 +79,9 @@ def apply_color_transform(images: torch.Tensor, ycc: str) -> torch.Tensor:
     if ycc == "none":
         return images.long()
     if images.ndim != 4 or images.size(1) != 3:
+        shape = tuple(images.shape)
         raise ValueError(
-            f"YCoCg transforms require RGB tensors of shape (N, 3, H, W), found {tuple(images.shape)}"
+            f"YCoCg transforms require RGB tensors of shape (N, 3, H, W), found {shape}"
         )
     if ycc == "lossy":
         return rgb_to_ycocg_lossy(images)
@@ -140,17 +161,10 @@ def _load_vision_dataset(
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int, int]]:
     from torchvision import datasets
 
-    if dataset == "mnist":
-        train_ds = datasets.MNIST(root=root, train=True, download=True)
-        test_ds = datasets.MNIST(root=root, train=False, download=True)
-        return (
-            flatten_images(train_ds.data[:, None], ycc),
-            flatten_images(test_ds.data[:, None], ycc),
-            (1, 28, 28),
-        )
-    if dataset == "fashion-mnist":
-        train_ds = datasets.FashionMNIST(root=root, train=True, download=True)
-        test_ds = datasets.FashionMNIST(root=root, train=False, download=True)
+    if dataset in {"mnist", "fashion-mnist"}:
+        dataset_cls = datasets.MNIST if dataset == "mnist" else datasets.FashionMNIST
+        train_ds = dataset_cls(root=root, train=True, download=True)
+        test_ds = dataset_cls(root=root, train=False, download=True)
         return (
             flatten_images(train_ds.data[:, None], ycc),
             flatten_images(test_ds.data[:, None], ycc),
@@ -196,42 +210,80 @@ def load_discrete_image_dataset(
 def make_nll_function(
     circuit,
     partition_function,
-    *,
-    use_compile=False,
-    backend="inductor",
-    mode="default",
-    fullgraph=False,
 ):
-    """Build the shared train/eval loss, optionally compiling its tensor operations.
+    """Build the normalized loss shared by training and evaluation.
 
-    Keep the original modules for optimizer parameters and checkpoint keys. The
-    callable reads their current parameters, including after loading a checkpoint.
-    Data transfer, logging and optimizer updates stay outside the compiled region.
+    The selected Cirkit backend owns module compilation, while this callable reads
+    the modules' current parameters after optimizer steps or checkpoint loading.
     """
 
     def nll(batch):
         return -(circuit(batch) - partition_function()).mean()
 
-    if not use_compile:
-        return nll
-    if backend != "inductor" and mode != "default":
-        raise ValueError("Non-default compile modes require --compile-backend=inductor")
-    logger.info(
-        f"Enabling torch.compile for NLL: backend={backend}, mode={mode}, fullgraph={fullgraph}. "
-        "The first training and evaluation batches include compilation overhead."
-    )
-    return torch.compile(nll, backend=backend, mode=mode, fullgraph=fullgraph)
+    return nll
+
+
+def make_pipeline_context(use_torch_compile: bool) -> PipelineContext:
+    """Create the optimized Cirkit context selected by the CLI."""
+    backend = "torch-compile" if use_torch_compile else "torch"
+    logger.info("Using Cirkit backend=%s", backend)
+    return PipelineContext(backend=backend, semiring="lse-sum", fold=True, optimize=True)
 
 
 @torch.inference_mode()
 def _mean_nll(nll_fn, data_loader, device: torch.device) -> float:
     loss_sum = torch.zeros((), dtype=torch.float64, device=device)
     sample_count = 0
-    for (batch,) in data_loader:
-        batch = batch.to(device).long()
+    for (raw_batch,) in data_loader:
+        batch = raw_batch.to(device).long()
         loss_sum.add_(nll_fn(batch).to(torch.float64), alpha=batch.size(0))
         sample_count += batch.size(0)
     return loss_sum.item() / sample_count
+
+
+def _sum_parameters_to_project(circuit, activation: str) -> list[torch.nn.Parameter]:
+    """Return each raw sum parameter once; input logits must remain unconstrained."""
+    if activation != "none":
+        return []
+    return list(
+        {
+            id(parameter): parameter
+            for layer in circuit.layers
+            if not isinstance(layer, TorchInputLayer)
+            for parameter in layer.parameters()
+        }.values()
+    )
+
+
+@torch.no_grad()
+def _project_positive(parameters: list[torch.nn.Parameter]) -> None:
+    """Project raw positive parameters away from zero before logarithms are taken."""
+    for parameter in parameters:
+        parameter.clamp_(min=POSITIVE_PARAMETER_MIN)
+
+
+def _log_final_training_metrics(
+    *,
+    saved_best: bool,
+    train_nll: float | None,
+    train_bpd: float | None,
+    val_nll: float | None,
+    val_bpd: float | None,
+    best_val_nll: float,
+) -> None:
+    """Send the available final metrics to Weights & Biases."""
+    values: dict[str, float | bool] = {"saved_best_checkpoint": saved_best}
+    if train_nll is not None:
+        assert train_bpd is not None
+        values.update(final_train_nll=train_nll, final_train_bpd=train_bpd)
+    if val_nll is not None:
+        assert val_bpd is not None
+        values.update(
+            final_val_nll=val_nll,
+            final_val_bpd=val_bpd,
+            best_val_nll=best_val_nll,
+        )
+    _log_wandb(values)
 
 
 def train_circuit(
@@ -239,20 +291,8 @@ def train_circuit(
     partition_function,
     train_loader,
     val_loader,
-    max_train_steps,
-    lr,
-    T_0,
-    eta_min,
-    weight_decay,
     device,
-    save_path,
-    validation_steps,
-    delta,
-    patience,
-    num_dimensions,
-    log_to_wandb=True,
-    activation="none",
-    use_scheduler=False,
+    config: TrainingConfig,
     nll_fn=None,
 ):
     if nll_fn is None:
@@ -260,32 +300,24 @@ def train_circuit(
     # Inputs use softmax over unconstrained logits, which must never be projected.
     # Only raw sum weights need positivity projection. With activation='clamp',
     # sum weights use a local positive-clamp and require no optimizer-side projection.
-    projected_sum_params = (
-        list(
-            {
-                id(p): p
-                for layer in circuit.layers
-                if not isinstance(layer, TorchInputLayer)
-                for p in layer.parameters()
-            }.values()
-        )
-        if activation == "none"
-        else []
+    projected_sum_params = _sum_parameters_to_project(circuit, config.activation)
+    _project_positive(projected_sum_params)
+    optimizer = optim.Adam(
+        circuit.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
-    with torch.no_grad():
-        for p in projected_sum_params:
-            p.clamp_(min=POSITIVE_PARAMETER_MIN)
-    optimizer = optim.Adam(circuit.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = (
         optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=T_0, T_mult=1, eta_min=eta_min
+            optimizer,
+            T_0=config.scheduler_period,
+            T_mult=1,
+            eta_min=config.minimum_learning_rate,
         )
-        if use_scheduler
+        if config.use_scheduler
         else None
     )
 
     best_val_nll = float("inf")
-    epochs_no_improve = 0
+    checks_no_improve = 0
     total_steps = 0
     avg_train_nll = None
     avg_val_nll = None
@@ -293,42 +325,39 @@ def train_circuit(
     bpd_val = None
     saved_best = False
 
-    print(f"Starting training for a maximum of {max_train_steps} steps.\n")
+    print(f"Starting training for a maximum of {config.max_steps} steps.\n")
 
-    while total_steps < max_train_steps and epochs_no_improve < patience:
+    while total_steps < config.max_steps and checks_no_improve < config.patience:
         circuit.train()
         # Keep detached metrics on-device; .item() per batch would synchronize CUDA.
         train_loss_sum = torch.zeros((), dtype=torch.float64, device=device)
         train_count = 0
-        for (batch,) in tqdm(train_loader, desc="[Train]", leave=False):
-            batch = batch.to(device).long()
+        for (raw_batch,) in tqdm(train_loader, desc="[Train]", leave=False):
+            batch = raw_batch.to(device).long()
 
             loss = nll_fn(batch)
 
             train_loss_sum.add_(loss.detach().to(torch.float64), alpha=batch.size(0))
             train_count += batch.size(0)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
             if scheduler is not None:
                 scheduler.step()
 
-            if projected_sum_params:
-                with torch.no_grad():
-                    for p in projected_sum_params:
-                        p.clamp_(min=POSITIVE_PARAMETER_MIN)
+            _project_positive(projected_sum_params)
 
             total_steps += 1
 
-            if total_steps % validation_steps == 0:
+            if total_steps % config.validation_steps == 0:
                 circuit.eval()
                 avg_train_nll = train_loss_sum.item() / train_count
                 avg_val_nll = _mean_nll(nll_fn, val_loader, device)
-                bpd_train = avg_train_nll / (num_dimensions * np.log(2.0))
-                bpd_val = avg_val_nll / (num_dimensions * np.log(2.0))
+                bpd_train = avg_train_nll / (config.num_dimensions * np.log(2.0))
+                bpd_val = avg_val_nll / (config.num_dimensions * np.log(2.0))
 
-                if log_to_wandb:
+                if config.log_to_wandb:
                     _log_wandb(
                         {
                             "step": total_steps,
@@ -339,45 +368,53 @@ def train_circuit(
                         }
                     )
 
-                if avg_val_nll - delta <= best_val_nll:
+                if avg_val_nll - config.min_delta <= best_val_nll:
                     best_val_nll = avg_val_nll
-                    torch.save(circuit.state_dict(), save_path)
+                    torch.save(circuit.state_dict(), config.save_path)
                     saved_best = True
-                    epochs_no_improve = 0
+                    checks_no_improve = 0
                     logger.info(
-                        f"New best model at step {total_steps}, Train NLL: {avg_train_nll:.4f}, "
-                        f"Train bpd: {bpd_train:.4f}, Val NLL: {best_val_nll:.4f}, "
-                        f"Val bpd: {bpd_val:.4f}"
+                        "New best model at step %d, Train NLL: %.4f, Train bpd: %.4f, "
+                        "Val NLL: %.4f, Val bpd: %.4f",
+                        total_steps,
+                        avg_train_nll,
+                        bpd_train,
+                        best_val_nll,
+                        bpd_val,
                     )
                 else:
-                    epochs_no_improve += 1
+                    checks_no_improve += 1
                     logger.info(
-                        f"No improvement at step {total_steps}, count: {epochs_no_improve}/{patience}"
+                        "No improvement at step %d, count: %d/%d",
+                        total_steps,
+                        checks_no_improve,
+                        config.patience,
                     )
 
-                if epochs_no_improve >= patience:
+                if checks_no_improve >= config.patience:
                     logger.info("Early stopping triggered.")
                     break
 
                 circuit.train()
 
-            if total_steps >= max_train_steps:
+            if total_steps >= config.max_steps:
                 break
 
     if not saved_best:
-        torch.save(circuit.state_dict(), save_path)
-        logger.info(f"No validation checkpoint was saved; saved current model to {save_path}.")
+        torch.save(circuit.state_dict(), config.save_path)
+        logger.info(
+            "No validation checkpoint was saved; saved current model to %s.", config.save_path
+        )
 
-    if log_to_wandb:
-        final_logs = {"saved_best_checkpoint": saved_best}
-        if avg_train_nll is not None:
-            final_logs["final_train_nll"] = avg_train_nll
-            final_logs["final_train_bpd"] = bpd_train
-        if avg_val_nll is not None:
-            final_logs["final_val_nll"] = avg_val_nll
-            final_logs["final_val_bpd"] = bpd_val
-            final_logs["best_val_nll"] = best_val_nll
-        _log_wandb(final_logs)
+    if config.log_to_wandb:
+        _log_final_training_metrics(
+            saved_best=saved_best,
+            train_nll=avg_train_nll,
+            train_bpd=bpd_train,
+            val_nll=avg_val_nll,
+            val_bpd=bpd_val,
+            best_val_nll=best_val_nll,
+        )
 
 
 @torch.inference_mode()
@@ -397,7 +434,7 @@ def evaluate_circuit(
     avg_test_nll = _mean_nll(nll_fn, tqdm(test_loader, desc="[Test]", leave=False), device)
     avg_test_bpd = avg_test_nll / (num_dimensions * np.log(2.0))
 
-    logger.info(f"Test NLL: {avg_test_nll:.4f} | bpd: {avg_test_bpd:.4f}")
+    logger.info("Test NLL: %.4f | bpd: %.4f", avg_test_nll, avg_test_bpd)
 
     if log_to_wandb:
         _log_wandb({"test_nll": avg_test_nll, "test_bpd": avg_test_bpd})
@@ -502,14 +539,11 @@ def build_parser() -> argparse.ArgumentParser:
     add("--use-estimated-weights", action="store_true")
 
     # Optional features
-    add("--torch-compile", action="store_true")
-    add("--compile-backend", default="inductor", choices=["inductor", "eager", "aot_eager"])
     add(
-        "--compile-mode",
-        default="default",
-        choices=["default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+        "--torch-compile",
+        action="store_true",
+        help="Use Cirkit's torch-compile backend instead of the standard torch backend.",
     )
-    add("--compile-fullgraph", action="store_true")
     add("--wandb", action="store_true")
     add("--project", default="pc_dataset_eval")
 
@@ -526,9 +560,6 @@ def main() -> None:
         parser.error("--num-bins must be between 1 and 256")
     if args.mi_chunk_size is not None and args.mi_chunk_size <= 0:
         parser.error("--mi-chunk-size must be positive")
-    if args.torch_compile and args.compile_backend != "inductor" and args.compile_mode != "default":
-        parser.error("Non-default --compile-mode requires --compile-backend=inductor")
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
@@ -547,7 +578,7 @@ def main() -> None:
     else:
         run = None
 
-    X_train, X_val, X_test, image_shape = load_discrete_image_dataset(args)
+    train_data, val_data, test_data, image_shape = load_discrete_image_dataset(args)
     if (
         image_shape[0] > 1
         and args.input_sharing == "full"
@@ -558,16 +589,23 @@ def main() -> None:
             "use --input-sharing none with this RG"
         )
     logger.info(
-        f"Loaded {args.dataset}: train={tuple(X_train.shape)}, val={tuple(X_val.shape)}, test={tuple(X_test.shape)}"
+        "Loaded %s: train=%s, val=%s, test=%s",
+        args.dataset,
+        tuple(train_data.shape),
+        tuple(val_data.shape),
+        tuple(test_data.shape),
     )
     logger.info(
-        f"Using image_shape={image_shape}, ycc={args.ycc}, input_sharing={args.input_sharing}"
+        "Using image_shape=%s, ycc=%s, input_sharing=%s",
+        image_shape,
+        args.ycc,
+        args.input_sharing,
     )
-    train_loader = DataLoader(TensorDataset(X_train), batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(TensorDataset(X_val), batch_size=args.batch_size, shuffle=False)
-    test_loader = DataLoader(TensorDataset(X_test), batch_size=args.batch_size, shuffle=False)
+    train_loader = DataLoader(TensorDataset(train_data), batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(TensorDataset(val_data), batch_size=args.batch_size, shuffle=False)
+    test_loader = DataLoader(TensorDataset(test_data), batch_size=args.batch_size, shuffle=False)
 
-    logger.info(f"Using {len(X_train)} samples to build/estimate the circuit")
+    logger.info("Using %d samples to build/estimate the circuit", len(train_data))
     initialization = (
         DataDrivenInitialization(
             alpha=args.alpha,
@@ -584,7 +622,7 @@ def main() -> None:
     )
     symbolic_circuit = image_data(
         image_shape,
-        data=X_train.to(device),
+        data=train_data.to(device),
         input_layer="categorical",
         region_graph=args.rg,
         num_bins=args.num_bins,
@@ -600,24 +638,17 @@ def main() -> None:
 
     symbolic_partition_function = sf.integrate(symbolic_circuit)
 
-    logger.info(f"Circuit built with {len(list(symbolic_circuit.layers))} layers")
+    logger.info("Circuit built with %d layers", len(list(symbolic_circuit.layers)))
 
     max_train_steps = int(len(train_loader) * args.max_epochs)
 
-    ctx = PipelineContext(backend="torch", semiring="lse-sum", fold=True, optimize=True)
+    ctx = make_pipeline_context(args.torch_compile)
 
     circuit = ctx.compile(symbolic_circuit).to(device)
     circuit_partition_function = ctx.compile(symbolic_partition_function).to(device)
-    nll_fn = make_nll_function(
-        circuit,
-        circuit_partition_function,
-        use_compile=args.torch_compile,
-        backend=args.compile_backend,
-        mode=args.compile_mode,
-        fullgraph=args.compile_fullgraph,
-    )
+    nll_fn = make_nll_function(circuit, circuit_partition_function)
 
-    logger.info(f"Number of parameters: {sum(p.numel() for p in circuit.parameters())}")
+    logger.info("Number of parameters: %d", sum(p.numel() for p in circuit.parameters()))
 
     num_dimensions = int(np.prod(image_shape))
     train_circuit(
@@ -625,20 +656,22 @@ def main() -> None:
         circuit_partition_function,
         train_loader,
         val_loader,
-        max_train_steps=max_train_steps,
-        lr=args.lr,
-        T_0=args.T_0,
-        eta_min=args.eta_min,
-        weight_decay=args.weight_decay,
-        validation_steps=args.validation_steps,
-        delta=args.min_delta,
-        patience=args.patience,
-        num_dimensions=num_dimensions,
         device=device,
-        save_path=args.save_path,
-        log_to_wandb=args.wandb,
-        activation=args.activation,
-        use_scheduler=args.use_scheduler,
+        config=TrainingConfig(
+            max_steps=max_train_steps,
+            learning_rate=args.lr,
+            scheduler_period=args.T_0,
+            minimum_learning_rate=args.eta_min,
+            weight_decay=args.weight_decay,
+            validation_steps=args.validation_steps,
+            min_delta=args.min_delta,
+            patience=args.patience,
+            num_dimensions=num_dimensions,
+            save_path=args.save_path,
+            log_to_wandb=args.wandb,
+            activation=args.activation,
+            use_scheduler=args.use_scheduler,
+        ),
         nll_fn=nll_fn,
     )
 

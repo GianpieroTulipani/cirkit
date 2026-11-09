@@ -517,9 +517,7 @@ def _fold_parameter_nodes_group(
 
         if compiler.state.has_symbolic_parameter(in_folded_node):
             sp = compiler.state.retrieve_symbolic_parameter(in_folded_node)
-            in_folded_node, fold_idx_offset = (
-                compiler.state.retrieve_compiled_parameter(sp)
-            )
+            in_folded_node, fold_idx_offset = compiler.state.retrieve_compiled_parameter(sp)
 
         in_fold_idx: list[int] = [
             fold_idx_offset + i

@@ -23,14 +23,14 @@ from cirkit.templates.initialization import DataDrivenInitialization
     ],
 )
 def test_invalid_initialization_data_precedes_chow_liu(modality, data):
-    kwargs = dict(
-        region_graph="chow-liu-tree",
-        data=data,
-        num_input_units=2,
-        num_sum_units=2,
-        sum_product_layer="cp",
-        initialization=DataDrivenInitialization(),
-    )
+    kwargs = {
+        "region_graph": "chow-liu-tree",
+        "data": data,
+        "num_input_units": 2,
+        "num_sum_units": 2,
+        "sum_product_layer": "cp",
+        "initialization": DataDrivenInitialization(),
+    }
     with patch("cirkit.templates.data_modalities.ChowLiuTree") as learn_tree:
         with pytest.raises(ValueError):
             if modality == "image":
@@ -71,14 +71,14 @@ def test_feature_categories_are_checked_before_chow_liu(data, counts):
 @pytest.mark.parametrize("modality", ["image", "tabular"])
 @pytest.mark.parametrize("dtype", [torch.uint8, torch.int64, torch.float32])
 def test_valid_integer_observations_reach_chow_liu(modality, dtype):
-    kwargs = dict(
-        region_graph="chow-liu-tree",
-        data=torch.tensor([[0, 0], [1, 255], [0, 255], [1, 0]], dtype=dtype),
-        num_input_units=2,
-        num_sum_units=2,
-        sum_product_layer="cp",
-        initialization=DataDrivenInitialization(),
-    )
+    kwargs = {
+        "region_graph": "chow-liu-tree",
+        "data": torch.tensor([[0, 0], [1, 255], [0, 255], [1, 0]], dtype=dtype),
+        "num_input_units": 2,
+        "num_sum_units": 2,
+        "sum_product_layer": "cp",
+        "initialization": DataDrivenInitialization(),
+    }
     if modality == "image":
         circuit = image_data((1, 1, 2), input_layer="categorical", num_bins=8, **kwargs)
     else:

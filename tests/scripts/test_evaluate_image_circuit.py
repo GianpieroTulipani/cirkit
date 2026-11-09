@@ -4,6 +4,7 @@ import logging
 import math
 import re
 import sys
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -16,7 +17,14 @@ from cirkit.templates.data_modalities import image_data
 from cirkit.templates.initialization import DataDrivenInitialization
 from cirkit.templates.utils import POSITIVE_PARAMETER_MIN, Parameterization
 from scripts import evaluate_image_circuit
-from scripts.evaluate_image_circuit import build_parser, main, make_nll_function, train_circuit
+from scripts.evaluate_image_circuit import (
+    TrainingConfig,
+    build_parser,
+    main,
+    make_nll_function,
+    make_pipeline_context,
+    train_circuit,
+)
 
 
 @pytest.mark.parametrize("activation", ["none", "clamp", "softmax", "softplus", "sigmoid"])
@@ -85,19 +93,21 @@ def test_training_projects_only_sum_weights_for_none(
             partition,
             [(data,)],
             [(data,)],
-            activation=activation,
-            max_train_steps=2,
-            lr=0.01,
-            T_0=1,
-            eta_min=0.0,
-            weight_decay=0.0,
             device="cpu",
-            save_path=tmp_path / "model.pt",
-            validation_steps=1,
-            delta=0.0,
-            patience=3,
-            num_dimensions=2 * channels,
-            log_to_wandb=False,
+            config=TrainingConfig(
+                max_steps=2,
+                learning_rate=0.01,
+                scheduler_period=1,
+                minimum_learning_rate=0.0,
+                weight_decay=0.0,
+                save_path=tmp_path / "model.pt",
+                validation_steps=1,
+                min_delta=0.0,
+                patience=3,
+                num_dimensions=2 * channels,
+                log_to_wandb=False,
+                activation=activation,
+            ),
             nll_fn=checked_nll,
         )
     for parameter in parameters:
@@ -112,10 +122,25 @@ def test_training_projects_only_sum_weights_for_none(
 
 def test_runner_exposes_sum_activation_choices():
     parser = build_parser()
+    assert not parser.parse_args([]).torch_compile
+    assert parser.parse_args(["--torch-compile"]).torch_compile
     for activation in ("none", "clamp", "softmax", "softplus", "sigmoid"):
         args = parser.parse_args(["--activation", activation])
         assert args.activation == activation
         assert not hasattr(args, "input_activation")
+        assert not hasattr(args, "compile_backend")
+
+
+@pytest.mark.parametrize("enabled,backend", [(False, "torch"), (True, "torch-compile")])
+def test_runner_selects_cirkit_backend(enabled, backend):
+    with patch("scripts.evaluate_image_circuit.PipelineContext") as context_cls:
+        assert make_pipeline_context(enabled) is context_cls.return_value
+    context_cls.assert_called_once_with(
+        backend=backend,
+        semiring="lse-sum",
+        fold=True,
+        optimize=True,
+    )
 
 
 @pytest.mark.parametrize(

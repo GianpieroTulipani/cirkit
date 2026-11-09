@@ -16,11 +16,13 @@ from cirkit.utils.scope import Scope
 
 @pytest.mark.parametrize(
     "semiring,fold,optimize,logits",
-    itertools.product(
-        ["sum-product", "lse-sum"],
-        [False, True],
-        [False, True],
-        [False, True],
+    tuple(
+        itertools.product(
+            ["sum-product", "lse-sum"],
+            [False, True],
+            [False, True],
+            [False, True],
+        )
     ),
 )
 def test_multichannel_likelihood_and_marginals(semiring, fold, optimize, logits):
@@ -74,7 +76,12 @@ def test_multichannel_likelihood_and_marginals(semiring, fold, optimize, logits)
     ],
 )
 def test_multichannel_invalid_configuration(kwargs):
-    config = dict(scope=Scope([0, 1]), num_output_units=1, num_channels=2, num_categories=2)
+    config = {
+        "scope": Scope([0, 1]),
+        "num_output_units": 1,
+        "num_channels": 2,
+        "num_categories": 2,
+    }
     config.update(kwargs)
     with pytest.raises(ValueError):
         MultichannelCategoricalLayer(**config)

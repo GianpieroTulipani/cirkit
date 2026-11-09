@@ -1,7 +1,7 @@
 """Construct symbolic circuits for images and tables, optionally initialized from data."""
 
 import functools
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping, TypeAlias, get_args
 
 import numpy as np
 from torch import Tensor
@@ -20,12 +20,26 @@ from cirkit.templates.region_graph import (
 )
 from cirkit.templates.utils import (
     InputLayerFactory,
+    InputLayerName,
+    InputSharing,
     Parameterization,
+    SumProductLayerName,
     categorical_input_layer_factory,
     name_to_input_layer_factory,
     parameterization_to_factory,
 )
 from cirkit.utils.scope import Scope
+
+ImageRegionGraph: TypeAlias = Literal[
+    "quad-tree-2",
+    "quad-tree-4",
+    "quad-graph",
+    "random-binary-tree",
+    "poon-domingos",
+    "chow-liu-tree",
+    "linear-tree",
+]
+TabularRegionGraph: TypeAlias = Literal["random-binary-tree", "chow-liu-tree"]
 
 
 def _flatten_image_data(data: Tensor, image_shape: tuple[int, int, int]) -> Tensor:
@@ -60,13 +74,147 @@ def _flatten_image_data(data: Tensor, image_shape: tuple[int, int, int]) -> Tens
     return data.reshape(data.shape[0], num_variables)
 
 
+def _build_image_region_graph(
+    image_shape: tuple[int, int, int],
+    region_graph: ImageRegionGraph,
+    *,
+    input_layer: InputLayerName,
+    data: Tensor | None,
+    num_bins: int | None,
+    mi_chunk_size: int | None,
+    validate_initialization: bool,
+) -> RegionGraph:
+    """Build the requested image region graph and validate structure-learning data."""
+    num_variables = int(np.prod(image_shape))
+    match region_graph:
+        case "quad-tree-2":
+            return QuadTree(image_shape, num_patch_splits=2)
+        case "quad-tree-4":
+            return QuadTree(image_shape, num_patch_splits=4)
+        case "quad-graph":
+            return QuadGraph(image_shape)
+        case "random-binary-tree":
+            return RandomBinaryTree(num_variables)
+        case "poon-domingos":
+            delta = int(max(np.ceil(image_shape[1] / 8), np.ceil(image_shape[2] / 8)))
+            return PoonDomingos(image_shape, delta=delta)
+        case "linear-tree":
+            return LinearTree(num_variables)
+        case "chow-liu-tree":
+            if data is None:
+                raise ValueError("A data tensor is required when region_graph is 'chow-liu-tree'")
+            flattened_data = _flatten_image_data(data, image_shape)
+            if validate_initialization:
+                if flattened_data.shape[0] == 0:
+                    raise ValueError("Expected non-empty categorical observations")
+                if flattened_data.is_complex() or not bool(flattened_data.isfinite().all()):
+                    raise ValueError("Categorical observations must be finite real integers")
+                if flattened_data.is_floating_point() and not bool(
+                    (flattened_data == flattened_data.round()).all()
+                ):
+                    raise ValueError("Categorical observations must be integer-valued")
+                values = flattened_data.long()
+                if bool(((values < 0) | (values >= 256)).any()):
+                    raise ValueError("Categorical image observations must be in [0, 256)")
+            if input_layer == "gaussian":
+                if not flattened_data.is_floating_point():
+                    raise ValueError(
+                        "A floating-point data tensor is required when input_layer is "
+                        f"'gaussian', but found a tensor of dtype {flattened_data.dtype}"
+                    )
+                result = ChowLiuTree(
+                    data=flattened_data,
+                    input_type="gaussian",
+                    chunk_size=mi_chunk_size,
+                    as_region_graph=True,
+                )
+            else:
+                clt_data = flattened_data.long()
+                num_categories = 256
+                if num_bins is not None:
+                    if not 1 <= num_bins <= 256:
+                        raise ValueError(
+                            f"Expected num_bins to be in [1, 256], but found {num_bins}"
+                        )
+                    clt_data = (clt_data * num_bins).div(256, rounding_mode="floor")
+                    clt_data = clt_data.clamp_max(num_bins - 1)
+                    num_categories = num_bins
+                result = ChowLiuTree(
+                    data=clt_data,
+                    input_type="categorical",
+                    num_categories=num_categories,
+                    chunk_size=mi_chunk_size,
+                    as_region_graph=True,
+                )
+            if not isinstance(result, RegionGraph):
+                raise ValueError(f"Expected a RegionGraph, but got {type(result).__name__}")
+            return result
+    raise AssertionError(f"Unhandled image region graph {region_graph!r}")
+
+
+def _build_tabular_region_graph(
+    region_graph: TabularRegionGraph,
+    *,
+    num_features: int | None,
+    data: Tensor | None,
+    input_layers: dict | list[dict],
+    validate_initialization: bool,
+) -> RegionGraph:
+    """Build a fixed or learned tabular region graph."""
+    if region_graph == "random-binary-tree":
+        if num_features is None:
+            if data is None:
+                raise ValueError(f"You must pass `num_features=` if you ask for {region_graph}.")
+            num_features = data.shape[1]
+        return RandomBinaryTree(num_features)
+
+    if data is None:
+        raise ValueError("You must pass `data=` if you ask for `chow-liu-tree`.")
+    if validate_initialization:
+        if data.is_complex() or not bool(data.isfinite().all()):
+            raise ValueError("Categorical observations must be finite real integers")
+        if data.is_floating_point() and not bool((data == data.round()).all()):
+            raise ValueError("Categorical observations must be integer-valued")
+        feature_specs = (
+            [input_layers] * data.shape[1] if isinstance(input_layers, dict) else input_layers
+        )
+        if len(feature_specs) != data.shape[1]:
+            raise ValueError("Number of input layers must match the number of features")
+        values = data.long()
+        for feature, spec in enumerate(feature_specs):
+            num_categories = spec["args"]["num_categories"]
+            column = values[:, feature]
+            if bool(((column < 0) | (column >= num_categories)).any()):
+                raise ValueError(
+                    f"Observations in feature {feature} must be in [0, {num_categories})"
+                )
+
+    result = ChowLiuTree(
+        data=data,
+        input_type=(
+            input_layers["name"]
+            if isinstance(input_layers, dict)
+            else [spec["name"] for spec in input_layers]
+        ),
+        num_categories=(
+            input_layers["args"]["num_categories"]
+            if isinstance(input_layers, dict) and input_layers["name"] == "categorical"
+            else None
+        ),
+        as_region_graph=True,
+    )
+    if not isinstance(result, RegionGraph):
+        raise ValueError(f"Expected a RegionGraph, but got {type(result).__name__}.")
+    return result
+
+
 def image_data(  # pylint: disable=too-many-arguments
     image_shape: tuple[int, int, int],
-    region_graph: str = "quad-graph",
+    region_graph: ImageRegionGraph = "quad-graph",
     *,
-    input_layer: str,
+    input_layer: InputLayerName,
     num_input_units: int,
-    sum_product_layer: str,
+    sum_product_layer: SumProductLayerName,
     num_sum_units: int,
     num_classes: int = 1,
     input_params: dict[str, Parameterization] | None = None,
@@ -76,7 +224,7 @@ def image_data(  # pylint: disable=too-many-arguments
     num_bins: int | None = None,
     mi_chunk_size: int | None = None,
     initialization: DataDrivenInitialization | None = None,
-    input_sharing: str = "none",
+    input_sharing: InputSharing = "none",
 ) -> Circuit:
     """Constructs a symbolic circuit whose structure is tailored for image data sets.
 
@@ -165,21 +313,13 @@ def image_data(  # pylint: disable=too-many-arguments
             f" but found {image_shape}"
         )
 
-    if region_graph not in [
-        "quad-tree-2",
-        "quad-tree-4",
-        "quad-graph",
-        "random-binary-tree",
-        "poon-domingos",
-        "chow-liu-tree",
-        "linear-tree",
-    ]:
+    if region_graph not in get_args(ImageRegionGraph):
         raise ValueError(f"Unknown region graph called {region_graph}")
-    if input_layer not in ["categorical", "binomial", "embedding", "gaussian"]:
+    if input_layer not in get_args(InputLayerName):
         raise ValueError(f"Unknown input layer called {input_layer}")
-    if sum_product_layer not in ["cp", "cp-t", "tucker"]:
+    if sum_product_layer not in get_args(SumProductLayerName):
         raise ValueError(f"Unknown sum-product layer called {sum_product_layer}")
-    if input_sharing not in ["none", "full"]:
+    if input_sharing not in get_args(InputSharing):
         raise ValueError(f"Unknown input sharing mode {input_sharing!r}")
     if input_sharing == "full" and input_layer != "categorical":
         raise ValueError("Full input sharing requires categorical inputs")
@@ -197,86 +337,15 @@ def image_data(  # pylint: disable=too-many-arguments
             raise ValueError("Data-driven initialization requires a data tensor")
         estimation_data = _flatten_image_data(data, image_shape)
 
-    match region_graph:
-        case "quad-tree-2":
-            rg = QuadTree(image_shape, num_patch_splits=2)
-        case "quad-tree-4":
-            rg = QuadTree(image_shape, num_patch_splits=4)
-        case "quad-graph":
-            rg = QuadGraph(image_shape)
-        case "random-binary-tree":
-            rg = RandomBinaryTree(image_shape[0] * image_shape[1] * image_shape[2])
-        case "poon-domingos":
-            delta = int(max(np.ceil(image_shape[1] / 8), np.ceil(image_shape[2] / 8)))
-            rg = PoonDomingos(image_shape, delta=delta)
-        case "chow-liu-tree":
-            if data is None:
-                raise ValueError("A data tensor is required when region_graph is 'chow-liu-tree'")
-            flattened_data = _flatten_image_data(data, image_shape)
-            if initialization is not None:
-                if flattened_data.shape[0] == 0:
-                    raise ValueError("Expected non-empty categorical observations")
-                if flattened_data.is_complex() or not bool(flattened_data.isfinite().all()):
-                    raise ValueError("Categorical observations must be finite real integers")
-                if flattened_data.is_floating_point() and not bool(
-                    (flattened_data == flattened_data.round()).all()
-                ):
-                    raise ValueError("Categorical observations must be integer-valued")
-                # Promote uint8 before comparing with the upper bound 256.
-                values = flattened_data.long()
-                if bool(((values < 0) | (values >= 256)).any()):
-                    raise ValueError("Categorical image observations must be in [0, 256)")
-            match input_layer:
-                case "gaussian":
-                    if not flattened_data.is_floating_point():
-                        raise ValueError(
-                            "A floating-point data tensor is required when input_layer is "
-                            f"'gaussian', but found a tensor of dtype {flattened_data.dtype}"
-                        )
-                    rg_result = ChowLiuTree(
-                        data=flattened_data,
-                        input_type="gaussian",
-                        chunk_size=mi_chunk_size,
-                        as_region_graph=True,
-                    )
-
-                case "categorical" | "binomial" | "embedding":
-                    clt_data = flattened_data.long()
-                    num_categories = 256
-
-                    if num_bins is not None:
-                        if not 1 <= num_bins <= 256:
-                            raise ValueError(
-                                f"Expected num_bins to be in [1, 256], but found {num_bins}"
-                            )
-
-                        # Maps values in {0, ..., 255} to {0, ..., num_bins - 1}
-                        clt_data = (clt_data * num_bins).div(256, rounding_mode="floor")
-                        clt_data = clt_data.clamp_max(num_bins - 1)
-                        num_categories = num_bins
-                    # Categorical, binomial, and embedding image inputs are discrete variables.
-                    # Their Chow-Liu edge weights are computed with the categorical mutual
-                    # information estimator.
-                    rg_result = ChowLiuTree(
-                        data=clt_data,
-                        input_type="categorical",
-                        num_categories=num_categories,
-                        chunk_size=mi_chunk_size,
-                        as_region_graph=True,
-                    )
-
-                case _:
-                    raise ValueError(f"Unsupported input layer called {input_layer}")
-
-            if not isinstance(rg_result, RegionGraph):
-                raise ValueError(f"Expected a RegionGraph, but got {type(rg_result).__name__}")
-            rg = rg_result
-        case "linear-tree":
-            # The linear chain (HMM region graph) over the flattened image pixels,
-            # in their natural row-major order.
-            rg = LinearTree(image_shape[0] * image_shape[1] * image_shape[2])
-        case _:
-            raise ValueError(f"Unknown region graph called {region_graph}")
+    rg = _build_image_region_graph(
+        image_shape,
+        region_graph,
+        input_layer=input_layer,
+        data=data,
+        num_bins=num_bins,
+        mi_chunk_size=mi_chunk_size,
+        validate_initialization=initialization is not None,
+    )
 
     # Get the input layer factory
     input_kwargs: dict[str, Any]
@@ -338,25 +407,25 @@ def image_data(  # pylint: disable=too-many-arguments
             estimation_data,
             initialization=initialization,
             sum_weight_param=sum_weight_param,
-            input_sharing="full" if input_sharing == "full" else "none",
+            input_sharing=input_sharing,
         )
     return circuit
 
 
 def tabular_data(
-    region_graph: str = "random-binary-tree",
+    region_graph: TabularRegionGraph = "random-binary-tree",
     *,
     num_features: int | None = None,
     data: Tensor | None = None,
     input_layers: dict | list[dict],
     num_input_units: int,
-    sum_product_layer: str,
+    sum_product_layer: SumProductLayerName,
     num_sum_units: int,
     num_classes: int = 1,
     sum_weight_param: Parameterization | None = None,
     use_mixing_weights: bool = True,
     initialization: DataDrivenInitialization | None = None,
-    input_sharing: str = "none",
+    input_sharing: InputSharing = "none",
 ) -> Circuit:
     """
     Constructs a symbolic circuit whose structure is tailored for tabular data sets,
@@ -429,9 +498,11 @@ def tabular_data(
             - If `region_graph` is not one of the supported strings.
     """
 
-    if sum_product_layer not in ["cp", "cp-t", "tucker"]:
+    if region_graph not in get_args(TabularRegionGraph):
+        raise ValueError(f"Unknown region graph called {region_graph}")
+    if sum_product_layer not in get_args(SumProductLayerName):
         raise ValueError(f"Unknown sum-product layer called {sum_product_layer}")
-    if input_sharing not in ["none", "full"]:
+    if input_sharing not in get_args(InputSharing):
         raise ValueError(f"Unknown input sharing mode {input_sharing!r}")
     specs = [input_layers] if isinstance(input_layers, dict) else input_layers
     if not specs or any("name" not in spec or "args" not in spec for spec in specs):
@@ -454,58 +525,13 @@ def tabular_data(
         if specs[0]["name"] != "categorical" or any(spec != specs[0] for spec in specs):
             raise ValueError("Full sharing requires identical categorical input specifications")
 
-    match region_graph:
-        case "random-binary-tree":
-            if num_features is None:
-                if data is not None:
-                    num_features = data.shape[1]
-                else:
-                    raise ValueError(
-                        f"You must pass `num_features=` if you ask for {region_graph}."
-                    )
-            rg = RandomBinaryTree(num_features)
-        case "chow-liu-tree":
-            if data is None:
-                raise ValueError("You must pass `data=` if you ask for `chow-liu-tree`.")
-            if initialization is not None:
-                if data.is_complex() or not bool(data.isfinite().all()):
-                    raise ValueError("Categorical observations must be finite real integers")
-                if data.is_floating_point() and not bool((data == data.round()).all()):
-                    raise ValueError("Categorical observations must be integer-valued")
-                feature_specs = (
-                    [input_layers] * data.shape[1]
-                    if isinstance(input_layers, dict)
-                    else input_layers
-                )
-                if len(feature_specs) != data.shape[1]:
-                    raise ValueError("Number of input layers must match the number of features")
-                values = data.long()
-                for feature, spec in enumerate(feature_specs):
-                    num_categories = spec["args"]["num_categories"]
-                    column = values[:, feature]
-                    if bool(((column < 0) | (column >= num_categories)).any()):
-                        raise ValueError(
-                            f"Observations in feature {feature} must be in [0, {num_categories})"
-                        )
-            rg_result = ChowLiuTree(
-                data=data,
-                input_type=(
-                    input_layers["name"]
-                    if isinstance(input_layers, dict)
-                    else list[str](spec["name"] for spec in input_layers)
-                ),
-                num_categories=(
-                    input_layers["args"]["num_categories"]
-                    if isinstance(input_layers, dict) and input_layers["name"] == "categorical"
-                    else None
-                ),
-                as_region_graph=True,
-            )
-            if not isinstance(rg_result, RegionGraph):
-                raise ValueError(f"Expected a RegionGraph, but got {type(rg_result).__name__}.")
-            rg = rg_result
-        case _:
-            raise ValueError(f"Unknown region graph called {region_graph}")
+    rg = _build_tabular_region_graph(
+        region_graph,
+        num_features=num_features,
+        data=data,
+        input_layers=input_layers,
+        validate_initialization=initialization is not None,
+    )
 
     if sum_weight_param is None:
         sum_weight_param = Parameterization(activation="softmax", initialization="normal")
@@ -554,6 +580,6 @@ def tabular_data(
             data,
             initialization=initialization,
             sum_weight_param=sum_weight_param,
-            input_sharing="full" if input_sharing == "full" else "none",
+            input_sharing=input_sharing,
         )
     return circuit
